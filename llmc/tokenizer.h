@@ -48,6 +48,12 @@ void tokenizer_init(Tokenizer *tokenizer, const char *filename) {
         printf("Re-run `python train_gpt2.py` to write it\n");
         printf("---\n");
         tokenizer->init_ok = 0;
+        // fall back to the GPT-2 <|endoftext|> token id so that generation still works
+        // without the tokenizer file (otherwise eot_token stays uninitialized and
+        // generation starts from a garbage token id -> "Token out of vocabulary")
+        tokenizer->eot_token = 50256;
+        tokenizer->vocab_size = 0;
+        tokenizer->token_table = NULL;
         return;
     }
     // read in the header
