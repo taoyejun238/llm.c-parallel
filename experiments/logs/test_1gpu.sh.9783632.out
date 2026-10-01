@@ -1,0 +1,138 @@
+Loading aquarius
+  Loading requirement: gcc/8.3.1
+===== GPU info =====
+Thu Oct  1 15:49:38 2026       
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.54.03              Driver Version: 535.54.03    CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA A100-SXM4-40GB          On  | 00000000:9E:00.0 Off |                    0 |
+| N/A   25C    P0              53W / 400W |      4MiB / 40960MiB |      0%      Default |
+|                                         |                      |             Disabled |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+===== library check =====
+	libnvidia-ml.so.1 => /usr/lib64/libnvidia-ml.so.1 (0x000014ee941c9000)
+	libnccl.so.2 => /work/opt/local/x86_64/cores/nvidia/24.1/Linux_x86_64/24.1/comm_libs/nccl/lib/libnccl.so.2 (0x000014ee8336a000)
+===== training =====
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_val.bin  |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 16                                                 |
+| sequence length T     | 1024                                               |
+| total batch size      | 16384                                              |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 20                                                 |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 10000                                              |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+| weight init method    | d12                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 12                                                 |
+| num_heads NH          | 12                                                 |
+| channels C            | 768                                                |
+| num_parameters        | 124475904                                          |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 20                                                 |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| Zero Optimization is disabled                                              |
+| num_processes         | 1                                                  |
+| zero_stage            | 0                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 124475904 => bytes: 248951808
+allocated 237 MiB for model parameters
+batch_size B=16 * seq_len T=1024 * num_processes=1 and total_batch_size=16384
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 237 MiB for parameter gradients
+allocating 9903 MiB for activations
+allocating 474 MiB for AdamW optimizer state m
+allocating 474 MiB for AdamW optimizer state v
+allocating 474 MiB for master copy of params
+device memory usage: 12405 MiB / 40339 MiB
+memory per sequence: 618 MiB
+ -> estimated maximum batch size: 61
+val loss 11.007753
+step    1/20 | loss 10.983397 (+nanz)| norm 21.8159 (+nanz)| lr 3.00e-04 | 152.04 ms | 27.8% bf16 MFU | 107760 tok/s
+step    2/20 | loss 9.786854 (+nanz)| norm 6.0927 (+nanz)| lr 3.00e-04 | 114.63 ms | 36.8% bf16 MFU | 142929 tok/s
+step    3/20 | loss 9.446031 (+nanz)| norm 4.0772 (+nanz)| lr 3.00e-04 | 115.46 ms | 36.5% bf16 MFU | 142400 tok/s
+step    4/20 | loss 9.161866 (+nanz)| norm 2.6734 (+nanz)| lr 3.00e-04 | 114.65 ms | 36.8% bf16 MFU | 142575 tok/s
+step    5/20 | loss 8.828896 (+nanz)| norm 2.5534 (+nanz)| lr 3.00e-04 | 114.39 ms | 36.9% bf16 MFU | 142751 tok/s
+step    6/20 | loss 8.537315 (+nanz)| norm 2.5088 (+nanz)| lr 3.00e-04 | 114.13 ms | 37.0% bf16 MFU | 142929 tok/s
+step    7/20 | loss 8.404545 (+nanz)| norm 1.8111 (+nanz)| lr 3.00e-04 | 114.62 ms | 36.8% bf16 MFU | 142932 tok/s
+step    8/20 | loss 8.030785 (+nanz)| norm 1.8304 (+nanz)| lr 3.00e-04 | 114.41 ms | 36.9% bf16 MFU | 142977 tok/s
+step    9/20 | loss 7.709033 (+nanz)| norm 2.1565 (+nanz)| lr 3.00e-04 | 114.14 ms | 37.0% bf16 MFU | 143062 tok/s
+step   10/20 | loss 7.528130 (+nanz)| norm 1.5289 (+nanz)| lr 3.00e-04 | 114.67 ms | 36.8% bf16 MFU | 143036 tok/s
+step   11/20 | loss 7.383422 (+nanz)| norm 1.5177 (+nanz)| lr 3.00e-04 | 115.66 ms | 36.5% bf16 MFU | 142865 tok/s
+step   12/20 | loss 7.157769 (+nanz)| norm 1.9534 (+nanz)| lr 3.00e-04 | 114.29 ms | 36.9% bf16 MFU | 142922 tok/s
+step   13/20 | loss 7.039609 (+nanz)| norm 1.3090 (+nanz)| lr 3.00e-04 | 114.62 ms | 36.8% bf16 MFU | 142924 tok/s
+step   14/20 | loss 6.819967 (+nanz)| norm 2.3653 (+nanz)| lr 3.00e-04 | 114.99 ms | 36.7% bf16 MFU | 142880 tok/s
+step   15/20 | loss 6.857356 (+nanz)| norm 1.0440 (+nanz)| lr 3.00e-04 | 114.25 ms | 36.9% bf16 MFU | 142931 tok/s
+step   16/20 | loss 6.751562 (+nanz)| norm 1.1780 (+nanz)| lr 3.00e-04 | 114.51 ms | 36.8% bf16 MFU | 142945 tok/s
+step   17/20 | loss 6.491522 (+nanz)| norm 1.0858 (+nanz)| lr 3.00e-04 | 114.76 ms | 36.8% bf16 MFU | 142929 tok/s
+step   18/20 | loss 6.444013 (+nanz)| norm 1.2797 (+nanz)| lr 3.00e-04 | 114.50 ms | 36.9% bf16 MFU | 142943 tok/s
+step   19/20 | loss 6.374359 (+nanz)| norm 0.9668 (+nanz)| lr 3.00e-04 | 115.33 ms | 36.6% bf16 MFU | 142871 tok/s
+step   20/20 | loss 6.226257 (+nanz)| norm 0.9412 (+nanz)| lr 3.00e-04 | 114.93 ms | 36.7% bf16 MFU | 142845 tok/s
+Error: Token out of vocabulary at train_gpt2.cu:675
+Error details:
+  File: train_gpt2.cu
+  Line: 675
+  Token: 1969447759
+  Position: 0
+  Vocab: 50257
+val loss 6.471338
+generating:
+---
+--------------------------------------------------------------------------
+Primary job  terminated normally, but 1 process returned
+a non-zero exit code. Per user-direction, the job has been aborted.
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+mpiexec detected that one or more processes exited with non-zero status, thus causing
+the job to be terminated. The first process to do so was:
+
+  Process name: [[22550,1],0]
+  Exit code:    1
+--------------------------------------------------------------------------
