@@ -195,6 +195,8 @@ else
 endif
 
 # Check if NCCL is available, include if so, for multi-GPU training
+# On systems without dpkg (e.g. RHEL-based HPC clusters), set NCCL_DIR=/path/to/nccl
+NCCL_DIR ?=
 ifeq ($(NO_MULTI_GPU), 1)
   $(info → Multi-GPU (NCCL) is manually disabled)
 else
@@ -202,7 +204,13 @@ else
     # Detect if running on macOS or Linux
     ifeq ($(SHELL_UNAME), Darwin)
       $(info ✗ Multi-GPU on CUDA on Darwin is not supported, skipping NCCL support)
-    else ifeq ($(shell dpkg -l | grep -q nccl && echo "exists"), exists)
+    else ifneq ($(NCCL_DIR),)
+      $(info ✓ NCCL found at $(NCCL_DIR), OK to train with multiple GPUs)
+      NVCC_FLAGS += -DMULTI_GPU
+      NVCC_INCLUDES += -I$(NCCL_DIR)/include
+      NVCC_LDFLAGS += -L$(NCCL_DIR)/lib
+      NVCC_LDLIBS += -lnccl
+    else ifeq ($(shell dpkg -l 2>/dev/null | grep -q nccl && echo "exists"), exists)
       $(info ✓ NCCL found, OK to train with multiple GPUs)
       NVCC_FLAGS += -DMULTI_GPU
       NVCC_LDLIBS += -lnccl
