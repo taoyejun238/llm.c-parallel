@@ -40,6 +40,32 @@ Notes:
 
 Raw logs: [`experiments/logs/`](experiments/logs/). Job scripts: [`experiments/jobs/`](experiments/jobs/).
 
+### Memory ablation: ZeRO-1 and activation recomputation (8 GPUs)
+
+GPT-2 1.5B (`d48`), micro batch B=2 per GPU, T=1024, BF16, 20 steps.
+
+| ZeRO | Recompute | Memory / GPU | Est. max batch | ms/step | tokens/s | MFU |
+|---|---|---|---|---|---|---|
+| off | off | 35.0 GB | 3 | 211.9 | 77,350 | 30.4% |
+| off | GeLU | 33.8 GB | 3 | 214.1 | 76,550 | 30.1% |
+| ZeRO-1 | off | 19.4 GB | 6 | 180.8 | 90,550 | 35.6% |
+| ZeRO-1 | GeLU | 18.2 GB | 7 | 182.9 | 89,560 | 35.2% |
+
+- ZeRO-1 saves about 15.6 GB per GPU, matching the theoretical 7/8 x 12 bytes/param (FP32 master weights + Adam m, v) for 1.56B parameters, and roughly doubles the maximum micro batch.
+- ZeRO-1 is also about 15% faster, since each GPU runs the AdamW update on only 1/8 of the parameters.
+- Recomputing GeLU saves about 1.2 GB at B=2 for about 1% slowdown; the effect is small at this batch size.
+
+### When the model does not fit: 2.7B without ZeRO
+
+GPT-2 2.7B (`d60`, 2.75B parameters), B=1 per GPU, 8 GPUs.
+
+| ZeRO | Memory / GPU | ms/step | tokens/s | MFU |
+|---|---|---|---|---|
+| off | 39.3 GB | 2,171 | 3,772 | 2.6% |
+| ZeRO-1 | 22.3 GB | 196 | 41,630 | 28.8% |
+
+Without ZeRO, the model states need about 44 GB per GPU (16 bytes/param), which exceeds the 40 GB of an A100. Instead of failing with OOM, llm.c falls back to `cudaMallocManaged` for the Adam m, v and master weights. The run still works, but every AdamW step pages about 33 GB over PCIe, making it about 11x slower. With ZeRO-1, all states fit in device memory.
+
 ## Changes to upstream llm.c
 
 - `Makefile`: added a `NCCL_DIR` option so NCCL can be found on systems without `dpkg` (e.g. RHEL-based HPC clusters).
@@ -49,7 +75,7 @@ Raw logs: [`experiments/logs/`](experiments/logs/). Job scripts: [`experiments/j
 
 - [x] Build llm.c on the cluster and run baseline scaling (1/2/4/8 GPUs)
 - [ ] Full baseline: GPT-2 124M trained on 10B tokens of FineWeb, HellaSwag eval
-- [ ] Memory ablations on 1.5B (`d48`) with ZeRO-1 and activation recomputation
+- [x] Memory ablations on 1.5B (`d48`) with ZeRO-1 and activation recomputation, and a 2.7B (`d60`) fit test
 - [ ] ZeRO-2
 - [ ] ZeRO-3
 - [ ] Tensor Parallelism
