@@ -1,0 +1,114 @@
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 1                                                  |
+| sequence length T     | 1024                                               |
+| total batch size      | 8192                                               |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 5                                                  |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 0                                                  |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+| weight init method    | d84                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 84                                                 |
+| num_heads NH          | 36                                                 |
+| channels C            | 3456                                               |
+| num_parameters        | 12220657920                                        |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 5                                                  |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| num_processes         | 8                                                  |
+| zero_stage            | 3                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 12220657920 => bytes: 24441315840
+allocated 23309 MiB for model parameters
+batch_size B=1 * seq_len T=1024 * num_processes=8 and total_batch_size=8192
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 338 MiB for non-block parameter gradients
+ZeRO-2: 2 layer buffers of 273 MiB, gradient shard of 2913 MiB
+ZeRO-3: 2 layer parameter buffers of 273 MiB, parameter shard of 2913 MiB
+ZeRO-3: keeping 339 MiB of replicated parameters (wte, wpe, ln1, lnf)
+allocating 13025 MiB for activations
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 5827 MiB for AdamW optimizer state m
+allocating 5827 MiB for AdamW optimizer state v
+allocating 5827 MiB for master copy of params
+device memory usage: 39529 MiB / 40339 MiB
+memory per sequence: 13025 MiB
+ -> estimated maximum batch size: 1
+val loss 11.328514
+step    1/5 | loss 11.321122 (+nanz)| norm 161.2808 (+nanz)| lr 3.00e-04 | 714.12 ms | 34.5% bf16 MFU | 11471 tok/s
+step    2/5 | loss 25.494516 (+nanz)| norm 74.8696 (+nanz)| lr 3.00e-04 | 696.50 ms | 35.4% bf16 MFU | 11762 tok/s
+step    3/5 | loss 15.742778 (+nanz)| norm 7.4955 (+nanz)| lr 3.00e-04 | 697.60 ms | 35.3% bf16 MFU | 11752 tok/s
+step    4/5 | loss 22.187910 (+nanz)| norm 55.8283 (+nanz)| lr 3.00e-04 | 697.18 ms | 35.4% bf16 MFU | 11751 tok/s
+step    5/5 | loss 17.300333 (+nanz)| norm 55.3843 (+nanz)| lr 3.00e-04 | 696.26 ms | 35.4% bf16 MFU | 11755 tok/s
+val loss 12.052289
+total average iteration time: 696.883976 ms
