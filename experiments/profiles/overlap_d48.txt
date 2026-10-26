@@ -1,0 +1,9 @@
+d48_z1_rank0   gpt2_forward               per step: compute   47.9 ms, NCCL   0.0 ms, overlapped   0.0 ms, exposed NCCL   0.0 ms
+d48_z1_rank0   gpt2_backward_and_reduce   per step: compute  109.8 ms, NCCL  32.2 ms, overlapped  29.8 ms, exposed NCCL   2.5 ms
+d48_z1_rank0   gpt2_update                per step: compute    4.5 ms, NCCL  14.3 ms, overlapped   1.8 ms, exposed NCCL  12.5 ms
+d48_z2_rank0   gpt2_forward               per step: compute   48.0 ms, NCCL   0.0 ms, overlapped   0.0 ms, exposed NCCL   0.0 ms
+d48_z2_rank0   gpt2_backward_and_reduce   per step: compute  109.7 ms, NCCL  33.9 ms, overlapped  29.7 ms, exposed NCCL   4.2 ms
+d48_z2_rank0   gpt2_update                per step: compute    4.5 ms, NCCL  14.2 ms, overlapped   1.6 ms, exposed NCCL  12.6 ms
+d48_z3_rank0   gpt2_forward               per step: compute   56.1 ms, NCCL  32.8 ms, overlapped  31.6 ms, exposed NCCL   1.1 ms
+d48_z3_rank0   gpt2_backward_and_reduce   per step: compute  117.0 ms, NCCL  60.8 ms, overlapped  54.5 ms, exposed NCCL   6.3 ms
+d48_z3_rank0   gpt2_update                per step: compute    4.5 ms, NCCL   2.2 ms, overlapped   2.2 ms, exposed NCCL   0.1 ms

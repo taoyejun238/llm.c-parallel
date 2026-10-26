@@ -1,0 +1,363 @@
+Loading aquarius
+  Loading requirement: gcc/8.3.1
+===== nsys d48 B=2 zero_stage=1 =====
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 2                                                  |
+| sequence length T     | 1024                                               |
+| total batch size      | 16384                                              |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 8                                                  |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 0                                                  |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+| weight init method    | d48                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 48                                                 |
+| num_heads NH          | 25                                                 |
+| channels C            | 1600                                               |
+| num_parameters        | 1557686400                                         |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 8                                                  |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| num_processes         | 8                                                  |
+| zero_stage            | 1                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 1557686400 => bytes: 3115372800
+allocated 2971 MiB for model parameters
+batch_size B=2 * seq_len T=1024 * num_processes=8 and total_batch_size=16384
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 2971 MiB for parameter gradients
+allocating 8666 MiB for activations
+allocating 742 MiB for AdamW optimizer state m
+allocating 742 MiB for AdamW optimizer state v
+allocating 742 MiB for master copy of params
+device memory usage: 18235 MiB / 40339 MiB
+memory per sequence: 4333 MiB
+ -> estimated maximum batch size: 7
+val loss 11.274031
+step    1/8 | loss 11.275547 (+nanz)| norm 77.9316 (+nanz)| lr 3.00e-04 | 206.09 ms | 31.3% bf16 MFU | 79501 tok/s
+step    2/8 | loss 11.914157 (+nanz)| norm 81.3156 (+nanz)| lr 3.00e-04 | 183.37 ms | 35.1% bf16 MFU | 89351 tok/s
+step    3/8 | loss 13.462219 (+nanz)| norm 5.8652 (+nanz)| lr 3.00e-04 | 183.61 ms | 35.1% bf16 MFU | 89290 tok/s
+step    4/8 | loss 10.647195 (+nanz)| norm 8.5444 (+nanz)| lr 3.00e-04 | 183.50 ms | 35.1% bf16 MFU | 89288 tok/s
+step    5/8 | loss 9.716014 (+nanz)| norm 4.1579 (+nanz)| lr 3.00e-04 | 183.96 ms | 35.0% bf16 MFU | 89227 tok/s
+step    6/8 | loss 9.039018 (+nanz)| norm 3.8374 (+nanz)| lr 3.00e-04 | 183.42 ms | 35.1% bf16 MFU | 89249 tok/s
+step    7/8 | loss 8.455251 (+nanz)| norm 3.7163 (+nanz)| lr 3.00e-04 | 183.40 ms | 35.1% bf16 MFU | 89265 tok/s
+step    8/8 | loss 7.903711 (+nanz)| norm 3.5631 (+nanz)| lr 3.00e-04 | 183.41 ms | 35.1% bf16 MFU | 89275 tok/s
+val loss 7.431742
+total average iteration time: 183.525407 ms
+Generating '/tmp/nsys-report-ab4e.qdstrm'
+[1/1] [0%                          ] d48_z1_rank0.nsys-rep[1/1] [0%                          ] d48_z1_rank0.nsys-rep[1/1] [===========50%              ] d48_z1_rank0.nsys-rep[1/1] [========================100%] d48_z1_rank0.nsys-rep[1/1] [0%                          ] d48_z1_rank0.nsys-rep[1/1] [5%                          ] d48_z1_rank0.nsys-rep[1/1] [7%                          ] d48_z1_rank0.nsys-rep[1/1] [==21%                       ] d48_z1_rank0.nsys-rep[1/1] [====27%                     ] d48_z1_rank0.nsys-rep[1/1] [======33%                   ] d48_z1_rank0.nsys-rep[1/1] [=======39%                  ] d48_z1_rank0.nsys-rep[1/1] [=========43%                ] d48_z1_rank0.nsys-rep[1/1] [=========46%                ] d48_z1_rank0.nsys-rep[1/1] [===========52%              ] d48_z1_rank0.nsys-rep[1/1] [=============59%            ] d48_z1_rank0.nsys-rep[1/1] [==============62%           ] d48_z1_rank0.nsys-rep[1/1] [================70%         ] d48_z1_rank0.nsys-rep[1/1] [================71%         ] d48_z1_rank0.nsys-rep[1/1] [=================72%        ] d48_z1_rank0.nsys-rep[1/1] [=================73%        ] d48_z1_rank0.nsys-rep[1/1] [=================74%        ] d48_z1_rank0.nsys-rep[1/1] [==================75%       ] d48_z1_rank0.nsys-rep[1/1] [==================76%       ] d48_z1_rank0.nsys-rep[1/1] [==================77%       ] d48_z1_rank0.nsys-rep[1/1] [==================78%       ] d48_z1_rank0.nsys-rep[1/1] [===================79%      ] d48_z1_rank0.nsys-rep[1/1] [===================80%      ] d48_z1_rank0.nsys-rep[1/1] [===================81%      ] d48_z1_rank0.nsys-rep[1/1] [===================82%      ] d48_z1_rank0.nsys-rep[1/1] [====================83%     ] d48_z1_rank0.nsys-rep[1/1] [====================84%     ] d48_z1_rank0.nsys-rep[1/1] [========================100%] d48_z1_rank0.nsys-rep[1/1] [========================100%] d48_z1_rank0.nsys-rep
+Generated:
+    /work/02/ge45/e45010/llm.c-parallel/experiments/profiles/d48_z1_rank0.nsys-rep
+===== nsys d48 B=2 zero_stage=2 =====
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 2                                                  |
+| sequence length T     | 1024                                               |
+| total batch size      | 16384                                              |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 8                                                  |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 0                                                  |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+| weight init method    | d48                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 48                                                 |
+| num_heads NH          | 25                                                 |
+| channels C            | 1600                                               |
+| num_parameters        | 1557686400                                         |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 8                                                  |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| num_processes         | 8                                                  |
+| zero_stage            | 2                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 1557686400 => bytes: 3115372800
+allocated 2971 MiB for model parameters
+batch_size B=2 * seq_len T=1024 * num_processes=8 and total_batch_size=16384
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 156 MiB for non-block parameter gradients
+ZeRO-2: 2 layer buffers of 58 MiB, gradient shard of 371 MiB
+allocating 8666 MiB for activations
+allocating 742 MiB for AdamW optimizer state m
+allocating 742 MiB for AdamW optimizer state v
+allocating 742 MiB for master copy of params
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+device memory usage: 15921 MiB / 40339 MiB
+memory per sequence: 4333 MiB
+ -> estimated maximum batch size: 7
+val loss 11.274031
+step    1/8 | loss 11.275547 (+nanz)| norm 77.9316 (+nanz)| lr 3.00e-04 | 185.61 ms | 34.7% bf16 MFU | 88271 tok/s
+step    2/8 | loss 11.914157 (+nanz)| norm 81.3156 (+nanz)| lr 3.00e-04 | 184.79 ms | 34.9% bf16 MFU | 88661 tok/s
+step    3/8 | loss 13.462167 (+nanz)| norm 5.8652 (+nanz)| lr 3.00e-04 | 184.44 ms | 34.9% bf16 MFU | 88749 tok/s
+step    4/8 | loss 10.647218 (+nanz)| norm 8.5439 (+nanz)| lr 3.00e-04 | 184.65 ms | 34.9% bf16 MFU | 88742 tok/s
+step    5/8 | loss 9.715986 (+nanz)| norm 4.1578 (+nanz)| lr 3.00e-04 | 184.40 ms | 34.9% bf16 MFU | 88771 tok/s
+step    6/8 | loss 9.038989 (+nanz)| norm 3.8372 (+nanz)| lr 3.00e-04 | 184.34 ms | 35.0% bf16 MFU | 88795 tok/s
+step    7/8 | loss 8.455161 (+nanz)| norm 3.7157 (+nanz)| lr 3.00e-04 | 184.87 ms | 34.9% bf16 MFU | 88763 tok/s
+step    8/8 | loss 7.903405 (+nanz)| norm 3.5630 (+nanz)| lr 3.00e-04 | 184.37 ms | 35.0% bf16 MFU | 88780 tok/s
+val loss 7.431669
+total average iteration time: 184.552061 ms
+Generating '/tmp/nsys-report-ffc1.qdstrm'
+[1/1] [0%                          ] d48_z2_rank0.nsys-rep[1/1] [0%                          ] d48_z2_rank0.nsys-rep[1/1] [===========50%              ] d48_z2_rank0.nsys-rep[1/1] [========================100%] d48_z2_rank0.nsys-rep[1/1] [0%                          ] d48_z2_rank0.nsys-rep[1/1] [6%                          ] d48_z2_rank0.nsys-rep[1/1] [5%                          ] d48_z2_rank0.nsys-rep[1/1] [7%                          ] d48_z2_rank0.nsys-rep[1/1] [==19%                       ] d48_z2_rank0.nsys-rep[1/1] [====25%                     ] d48_z2_rank0.nsys-rep[1/1] [====26%                     ] d48_z2_rank0.nsys-rep[1/1] [=====32%                    ] d48_z2_rank0.nsys-rep[1/1] [=======37%                  ] d48_z2_rank0.nsys-rep[1/1] [========41%                 ] d48_z2_rank0.nsys-rep[1/1] [=========45%                ] d48_z2_rank0.nsys-rep[1/1] [===========50%              ] d48_z2_rank0.nsys-rep[1/1] [============56%             ] d48_z2_rank0.nsys-rep[1/1] [==============62%           ] d48_z2_rank0.nsys-rep[1/1] [==============63%           ] d48_z2_rank0.nsys-rep[1/1] [==============64%           ] d48_z2_rank0.nsys-rep[1/1] [================71%         ] d48_z2_rank0.nsys-rep[1/1] [=================72%        ] d48_z2_rank0.nsys-rep[1/1] [=================73%        ] d48_z2_rank0.nsys-rep[1/1] [=================74%        ] d48_z2_rank0.nsys-rep[1/1] [==================75%       ] d48_z2_rank0.nsys-rep[1/1] [==================76%       ] d48_z2_rank0.nsys-rep[1/1] [==================77%       ] d48_z2_rank0.nsys-rep[1/1] [==================78%       ] d48_z2_rank0.nsys-rep[1/1] [===================79%      ] d48_z2_rank0.nsys-rep[1/1] [===================80%      ] d48_z2_rank0.nsys-rep[1/1] [===================81%      ] d48_z2_rank0.nsys-rep[1/1] [===================82%      ] d48_z2_rank0.nsys-rep[1/1] [====================83%     ] d48_z2_rank0.nsys-rep[1/1] [====================84%     ] d48_z2_rank0.nsys-rep[1/1] [========================100%] d48_z2_rank0.nsys-rep[1/1] [========================100%] d48_z2_rank0.nsys-rep
+Generated:
+    /work/02/ge45/e45010/llm.c-parallel/experiments/profiles/d48_z2_rank0.nsys-rep
+===== nsys d48 B=2 zero_stage=3 =====
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 2                                                  |
+| sequence length T     | 1024                                               |
+| total batch size      | 16384                                              |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 8                                                  |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 0                                                  |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+| weight init method    | d48                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 48                                                 |
+| num_heads NH          | 25                                                 |
+| channels C            | 1600                                               |
+| num_parameters        | 1557686400                                         |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 8                                                  |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| num_processes         | 8                                                  |
+| zero_stage            | 3                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 1557686400 => bytes: 3115372800
+allocated 2971 MiB for model parameters
+batch_size B=2 * seq_len T=1024 * num_processes=8 and total_batch_size=16384
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 156 MiB for non-block parameter gradients
+ZeRO-2: 2 layer buffers of 58 MiB, gradient shard of 371 MiB
+ZeRO-3: 2 layer parameter buffers of 58 MiB, parameter shard of 371 MiB
+ZeRO-3: keeping 156 MiB of replicated parameters (wte, wpe, ln1, lnf)
+allocating 8666 MiB for activations
+allocating 742 MiB for AdamW optimizer state m
+allocating 742 MiB for AdamW optimizer state v
+allocating 742 MiB for master copy of params
+device memory usage: 13599 MiB / 40339 MiB
+memory per sequence: 4333 MiB
+ -> estimated maximum batch size: 8
+val loss 11.274031
+step    1/8 | loss 11.275547 (+nanz)| norm 77.9316 (+nanz)| lr 3.00e-04 | 191.68 ms | 33.6% bf16 MFU | 85477 tok/s
+step    2/8 | loss 11.914157 (+nanz)| norm 81.3156 (+nanz)| lr 3.00e-04 | 189.81 ms | 34.0% bf16 MFU | 86318 tok/s
+step    3/8 | loss 13.462167 (+nanz)| norm 5.8652 (+nanz)| lr 3.00e-04 | 189.16 ms | 34.1% bf16 MFU | 86471 tok/s
+step    4/8 | loss 10.647218 (+nanz)| norm 8.5439 (+nanz)| lr 3.00e-04 | 189.71 ms | 34.0% bf16 MFU | 86434 tok/s
+step    5/8 | loss 9.715986 (+nanz)| norm 4.1578 (+nanz)| lr 3.00e-04 | 189.61 ms | 34.0% bf16 MFU | 86427 tok/s
+step    6/8 | loss 9.038989 (+nanz)| norm 3.8372 (+nanz)| lr 3.00e-04 | 189.41 ms | 34.0% bf16 MFU | 86444 tok/s
+step    7/8 | loss 8.455161 (+nanz)| norm 3.7157 (+nanz)| lr 3.00e-04 | 189.41 ms | 34.0% bf16 MFU | 86455 tok/s
+step    8/8 | loss 7.903405 (+nanz)| norm 3.5630 (+nanz)| lr 3.00e-04 | 190.05 ms | 33.9% bf16 MFU | 86414 tok/s
+val loss 7.431669
+total average iteration time: 189.592308 ms
+Generating '/tmp/nsys-report-eb31.qdstrm'
+[1/1] [0%                          ] d48_z3_rank0.nsys-rep[1/1] [0%                          ] d48_z3_rank0.nsys-rep[1/1] [===========50%              ] d48_z3_rank0.nsys-rep[1/1] [========================100%] d48_z3_rank0.nsys-rep[1/1] [0%                          ] d48_z3_rank0.nsys-rep[1/1] [5%                          ] d48_z3_rank0.nsys-rep[1/1] [7%                          ] d48_z3_rank0.nsys-rep[1/1] [6%                          ] d48_z3_rank0.nsys-rep[1/1] [5%                          ] d48_z3_rank0.nsys-rep[1/1] [8%                          ] d48_z3_rank0.nsys-rep[1/1] [7%                          ] d48_z3_rank0.nsys-rep[1/1] [=16%                        ] d48_z3_rank0.nsys-rep[1/1] [=17%                        ] d48_z3_rank0.nsys-rep[1/1] [==20%                       ] d48_z3_rank0.nsys-rep[1/1] [====25%                     ] d48_z3_rank0.nsys-rep[1/1] [=====29%                    ] d48_z3_rank0.nsys-rep[1/1] [======33%                   ] d48_z3_rank0.nsys-rep[1/1] [=======37%                  ] d48_z3_rank0.nsys-rep[1/1] [========40%                 ] d48_z3_rank0.nsys-rep[1/1] [=========43%                ] d48_z3_rank0.nsys-rep[1/1] [=========45%                ] d48_z3_rank0.nsys-rep[1/1] [==========49%               ] d48_z3_rank0.nsys-rep[1/1] [===========53%              ] d48_z3_rank0.nsys-rep[1/1] [============54%             ] d48_z3_rank0.nsys-rep[1/1] [=============58%            ] d48_z3_rank0.nsys-rep[1/1] [=============59%            ] d48_z3_rank0.nsys-rep[1/1] [==============63%           ] d48_z3_rank0.nsys-rep[1/1] [===============65%          ] d48_z3_rank0.nsys-rep[1/1] [=================74%        ] d48_z3_rank0.nsys-rep[1/1] [==================75%       ] d48_z3_rank0.nsys-rep[1/1] [==================76%       ] d48_z3_rank0.nsys-rep[1/1] [==================77%       ] d48_z3_rank0.nsys-rep[1/1] [==================78%       ] d48_z3_rank0.nsys-rep[1/1] [===================79%      ] d48_z3_rank0.nsys-rep[1/1] [===================80%      ] d48_z3_rank0.nsys-rep[1/1] [===================81%      ] d48_z3_rank0.nsys-rep[1/1] [===================82%      ] d48_z3_rank0.nsys-rep[1/1] [====================83%     ] d48_z3_rank0.nsys-rep[1/1] [========================100%] d48_z3_rank0.nsys-rep[1/1] [========================100%] d48_z3_rank0.nsys-rep
+Generated:
+    /work/02/ge45/e45010/llm.c-parallel/experiments/profiles/d48_z3_rank0.nsys-rep
