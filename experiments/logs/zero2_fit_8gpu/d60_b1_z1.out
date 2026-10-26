@@ -1,0 +1,116 @@
++-----------------------+----------------------------------------------------+
+| Parameter             | Value                                              |
++-----------------------+----------------------------------------------------+
+| train data pattern    | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| val data pattern      | dev/data/tinyshakespeare/tiny_shakespeare_train.bin |
+| output log dir        | NULL                                               |
+| checkpoint_every      | 0                                                  |
+| resume                | 0                                                  |
+| micro batch size B    | 1                                                  |
+| sequence length T     | 1024                                               |
+| total batch size      | 8192                                               |
+| LR scheduler          | cosine                                             |
+| learning rate (LR)    | 3.000000e-04                                       |
+| warmup iterations     | 0                                                  |
+| final LR fraction     | 1.000000e+00                                       |
+| weight decay          | 0.000000e+00                                       |
+| skip update lossz     | 0.000000                                           |
+| skip update gradz     | 0.000000                                           |
+| max_steps             | 10                                                 |
+| val_loss_every        | 10000                                              |
+| val_max_steps         | 20                                                 |
+| sample_every          | 0                                                  |
+| genT                  | 64                                                 |
+| overfit_single_batch  | 0                                                  |
+| use_master_weights    | enabled                                            |
+| gelu_fusion           | 0                                                  |
+| recompute             | 1                                                  |
++-----------------------+----------------------------------------------------+
+| device                | NVIDIA A100-SXM4-40GB                              |
+| peak TFlops           | 312.0                                              |
+| precision             | BF16                                               |
++-----------------------+----------------------------------------------------+
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+| weight init method    | d60                                                |
+| max_sequence_length T | 1024                                               |
+| vocab_size V          | 50257                                              |
+| padded_vocab_size Vp  | 50304                                              |
+| num_layers L          | 60                                                 |
+| num_heads NH          | 30                                                 |
+| channels C            | 1920                                               |
+| num_parameters        | 2754259200                                         |
++-----------------------+----------------------------------------------------+
+| train_num_batches     | 10                                                 |
+| val_num_batches       | 20                                                 |
++-----------------------+----------------------------------------------------+
+| run hellaswag         | no                                                 |
++-----------------------+----------------------------------------------------+
+| num_processes         | 8                                                  |
+| zero_stage            | 1                                                  |
++-----------------------+----------------------------------------------------+
+HellaSwag eval not found at dev/data/hellaswag/hellaswag_val.bin, skipping its evaluation
+You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.
+num_parameters: 2754259200 => bytes: 5508518400
+allocated 5253 MiB for model parameters
+batch_size B=1 * seq_len T=1024 * num_processes=8 and total_batch_size=8192
+=> setting grad_accum_steps=1
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 5253 MiB for parameter gradients
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 6440 MiB for activations
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+allocating 1313 MiB for AdamW optimizer state m
+allocating 1313 MiB for AdamW optimizer state v
+allocating 1313 MiB for master copy of params
+---
+WARNING: Failed to open the tokenizer file gpt2_tokenizer.bin
+The Tokenizer is a new feature added April 14 2024.
+Re-run `python train_gpt2.py` to write it
+---
+device memory usage: 22271 MiB / 40339 MiB
+memory per sequence: 6440 MiB
+ -> estimated maximum batch size: 3
+val loss 11.080935
+step    1/10 | loss 11.082254 (+nanz)| norm 105.2712 (+nanz)| lr 3.00e-04 | 201.04 ms | 28.1% bf16 MFU | 40748 tok/s
+step    2/10 | loss 15.984550 (+nanz)| norm 66.4128 (+nanz)| lr 3.00e-04 | 196.43 ms | 28.8% bf16 MFU | 41704 tok/s
+step    3/10 | loss 13.674275 (+nanz)| norm 6.6840 (+nanz)| lr 3.00e-04 | 196.70 ms | 28.8% bf16 MFU | 41675 tok/s
+step    4/10 | loss 12.797119 (+nanz)| norm 39.2896 (+nanz)| lr 3.00e-04 | 196.86 ms | 28.7% bf16 MFU | 41654 tok/s
+step    5/10 | loss 10.097597 (+nanz)| norm 16.4562 (+nanz)| lr 3.00e-04 | 196.89 ms | 28.7% bf16 MFU | 41641 tok/s
+step    6/10 | loss 9.278127 (+nanz)| norm 4.2661 (+nanz)| lr 3.00e-04 | 196.71 ms | 28.8% bf16 MFU | 41642 tok/s
+step    7/10 | loss 8.837283 (+nanz)| norm 4.6016 (+nanz)| lr 3.00e-04 | 196.72 ms | 28.8% bf16 MFU | 41642 tok/s
+step    8/10 | loss 8.390274 (+nanz)| norm 4.6219 (+nanz)| lr 3.00e-04 | 197.05 ms | 28.7% bf16 MFU | 41631 tok/s
+step    9/10 | loss 7.741627 (+nanz)| norm 4.5442 (+nanz)| lr 3.00e-04 | 198.04 ms | 28.6% bf16 MFU | 41591 tok/s
+step   10/10 | loss 7.295003 (+nanz)| norm 4.0725 (+nanz)| lr 3.00e-04 | 197.32 ms | 28.7% bf16 MFU | 41581 tok/s
+val loss 6.945523
+total average iteration time: 196.969542 ms
