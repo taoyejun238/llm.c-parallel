@@ -34,3 +34,9 @@ dev/cuda/global_norm
 
 # log files
 *.log
+
+# this fork: local binaries, PJM scratch files, raw Nsight traces
+bin/
+.d00*
+experiments/profiles/*.nsys-rep
+experiments/profiles/*.sqlite

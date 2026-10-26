@@ -118,7 +118,15 @@ typedef struct {
 } ParameterTensors;
 static_assert(sizeof(ParameterTensors) == NUM_PARAMETER_TENSORS * sizeof(void*), "Inconsistent sizes!");
 
-void fill_in_parameter_sizes(size_t* param_sizes, size_t* param_sizeof, GPT2Config config) {
+// With tensor parallelism (tp > 1), each rank holds 1/tp of qkvw, qkvb, fcw, fcb (column-parallel:
+// split along the output dimension, qkv by attention heads) and of attprojw, fcprojw (row-parallel:
+// split along the input dimension). All other tensors are replicated.
+inline bool tp_is_sharded(int param_tensor_id) {
+    return param_tensor_id == 4 || param_tensor_id == 5 || param_tensor_id == 6 ||
+           param_tensor_id == 10 || param_tensor_id == 11 || param_tensor_id == 12;
+}
+
+void fill_in_parameter_sizes(size_t* param_sizes, size_t* param_sizeof, GPT2Config config, int tp = 1) {
     size_t Vp = config.padded_vocab_size;
     size_t C = config.channels;
     size_t maxT = config.max_seq_len;
@@ -127,15 +135,15 @@ void fill_in_parameter_sizes(size_t* param_sizes, size_t* param_sizeof, GPT2Conf
     param_sizes[1] = maxT * C; // wpe
     param_sizes[2] = L * C; // ln1w
     param_sizes[3] = L * C; // ln1b
-    param_sizes[4] = L * (3 * C) * C; // qkvw
-    param_sizes[5] = L * (3 * C); // qkvb
-    param_sizes[6] = L * C * C; // attprojw
+    param_sizes[4] = L * (3 * C / tp) * C; // qkvw
+    param_sizes[5] = L * (3 * C / tp); // qkvb
+    param_sizes[6] = L * C * (C / tp); // attprojw
     param_sizes[7] = L * C; // attprojb
     param_sizes[8] = L * C; // ln2w
     param_sizes[9] = L * C; // ln2b
-    param_sizes[10] = L * (4 * C) * C; // fcw
-    param_sizes[11] = L * (4 * C); // fcb
-    param_sizes[12] = L * C * (4 * C); // fcprojw
+    param_sizes[10] = L * (4 * C / tp) * C; // fcw
+    param_sizes[11] = L * (4 * C / tp); // fcb
+    param_sizes[12] = L * C * (4 * C / tp); // fcprojw
     param_sizes[13] = L * C; // fcprojb
     param_sizes[14] = C; // lnfw
     param_sizes[15] = C; // lnfb
@@ -224,32 +232,36 @@ void fill_in_activation_sizes(const ActivationTensors* data, TensorSpec (&tensor
     size_t L = config.num_layers;
     size_t NH = config.num_heads;
     size_t C = config.channels;
+    // tensor parallelism: attention and MLP hidden activations only hold this rank's heads / columns
+    size_t tp = multi_gpu_config.tp_size;
+    size_t Cl = C / tp;
+    size_t NHl = NH / tp;
     tensors[0] = TENSOR_SPEC(data->encoded, B * T * C);
     // if recompute >= 1 then we will recompute the layernorm forward activation during backward pass
     tensors[1] = TENSOR_SPEC(data->ln1,  (recompute < 2) ? L * B * T * C : 0);
     tensors[2] = TENSOR_SPEC(data->ln1_mean, L * B * T);
     tensors[3] = TENSOR_SPEC(data->ln1_rstd, L * B * T);
-    tensors[4] = TENSOR_SPEC(data->atty, L * B * T * C);
+    tensors[4] = TENSOR_SPEC(data->atty, L * B * T * Cl);
     #ifdef ENABLE_CUDNN
     // FP32 stats tensor for cuDNN to be passed to backward pass
-    tensors[5] = TENSOR_SPEC(data->att, L * B * NH * T);
+    tensors[5] = TENSOR_SPEC(data->att, L * B * NHl * T);
     #else
-    tensors[5] = TENSOR_SPEC(data->att, L * B * NH * T * T);
+    tensors[5] = TENSOR_SPEC(data->att, L * B * NHl * T * T);
     #endif
     tensors[6] = TENSOR_SPEC(data->residual2, L * B * T * C);
     // if recompute >= 1 then we will recompute the layernorm forward activation during backward pass
     tensors[7] = TENSOR_SPEC(data->ln2, (recompute < 2) ? L * B * T * C : 0);
     tensors[8] = TENSOR_SPEC(data->ln2_mean, L * B * T);
     tensors[9] = TENSOR_SPEC(data->ln2_rstd, L * B * T);
-    tensors[10] = TENSOR_SPEC(data->fch, L * B * T * 4*C);
+    tensors[10] = TENSOR_SPEC(data->fch, L * B * T * 4*Cl);
     // if recompute >= 1 then we will recompute gelu_forward during backward and use this as scratch buffer
-    tensors[11] = TENSOR_SPEC(data->fch_gelu, (recompute < 1) ? L * B * T * 4*C : B * T * 4*C);
+    tensors[11] = TENSOR_SPEC(data->fch_gelu, (recompute < 1) ? L * B * T * 4*Cl : B * T * 4*Cl);
     tensors[12] = TENSOR_SPEC(data->residual3, L * B * T * C);
     tensors[13] = TENSOR_SPEC(data->lnf, B * T * C);
     tensors[14] = TENSOR_SPEC(data->lnf_mean, B * T);
     tensors[15] = TENSOR_SPEC(data->lnf_rstd, B * T);
     tensors[16] = TENSOR_SPEC(data->losses, B * T);
-    tensors[17] = TENSOR_SPEC(data->qkvr, L * B * T * 3*C);
+    tensors[17] = TENSOR_SPEC(data->qkvr, L * B * T * 3*Cl);
     tensors[18] = TENSOR_SPEC(data->output, B * T * max(3*C, max(NH*T, Vp)));
 
     tensors[19] = TENSOR_SPEC(data->scratch_bt4c, B * T * 4 * C);
@@ -361,8 +373,8 @@ void gpt2_init_common(GPT2 *model) {
 }
 
 void gpt2_allocate_weights(GPT2 *model) {
-    // fill in all the parameter tensor dimensions and types
-    fill_in_parameter_sizes(model->param_elements, model->param_sizeof, model->config);
+    // fill in all the parameter tensor dimensions and types (this rank's slice under tensor parallelism)
+    fill_in_parameter_sizes(model->param_elements, model->param_sizeof, model->config, multi_gpu_config.tp_size);
     model->num_parameters = 0;
     model->num_parameters_bytes = 0;
     for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
@@ -617,6 +629,49 @@ void gpt3_set_hyperparameters(GPT2Config* config, const char* channels_str) {
     config->max_seq_len = 2048; // NOTE: GPT-3 uses context length of 2048 tokens, up from 1024 in GPT-2
 }
 
+// Copy tensor-parallel rank r's slice of every parameter out of the full (tp = 1) parameter buffer.
+// Weights are stored (out, in) row-major, per layer:
+//   qkvw (3C, C), qkvb (3C): rows of heads [r*NH/tp, (r+1)*NH/tp) in each of the Q, K, V blocks
+//   fcw (4C, C), fcb (4C):   rows [r*4C/tp, (r+1)*4C/tp)
+//   attprojw (C, C), fcprojw (C, 4C): columns [r*in/tp, (r+1)*in/tp) of every row
+void tp_slice_parameters(floatX* local, const floatX* full, const size_t* local_elements, const size_t* full_elements,
+                         GPT2Config config, int tp, int r) {
+    size_t L = config.num_layers;
+    size_t C = config.channels;
+    size_t Cl = C / tp;
+    size_t local_offset = 0, full_offset = 0;
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+        if (!tp_is_sharded(i)) {
+            memcpy(local + local_offset, full + full_offset, full_elements[i] * sizeof(floatX));
+        } else {
+            for (size_t l = 0; l < L; l++) {
+                const floatX* src = full + full_offset + l * (full_elements[i] / L);
+                floatX* dst = local + local_offset + l * (local_elements[i] / L);
+                if (i == 4) {         // qkvw
+                    for (int p = 0; p < 3; p++) {
+                        memcpy(dst + p * Cl * C, src + (p * C + r * Cl) * C, Cl * C * sizeof(floatX));
+                    }
+                } else if (i == 5) {  // qkvb
+                    for (int p = 0; p < 3; p++) {
+                        memcpy(dst + p * Cl, src + p * C + r * Cl, Cl * sizeof(floatX));
+                    }
+                } else if (i == 10 || i == 11) {  // fcw, fcb: contiguous block of rows
+                    size_t n = local_elements[i] / L;
+                    memcpy(dst, src + r * n, n * sizeof(floatX));
+                } else {              // attprojw (in = C), fcprojw (in = 4C): column slice of every row
+                    size_t in_full = (i == 6) ? C : 4 * C;
+                    size_t in_local = in_full / tp;
+                    for (size_t o = 0; o < C; o++) {
+                        memcpy(dst + o * in_local, src + o * in_full + r * in_local, in_local * sizeof(floatX));
+                    }
+                }
+            }
+        }
+        local_offset += local_elements[i];
+        full_offset += full_elements[i];
+    }
+}
+
 void gpt_build_from_descriptor(GPT2 *model, const char* descriptor) {
     // The model descriptor can be:
     // - legacy format "dX", where X is number, e.g. "d12". This creates GPT-2 model with 12 layers.
@@ -642,13 +697,21 @@ void gpt_build_from_descriptor(GPT2 *model, const char* descriptor) {
 
     gpt2_allocate_weights(model);
 
+    // the full (un-sliced) model is always initialized, so tensor-parallel runs start from exactly the
+    // same weights as single-GPU runs; each rank then copies out its slice
+    size_t full_elements[NUM_PARAMETER_TENSORS];
+    size_t full_sizeof[NUM_PARAMETER_TENSORS];
+    fill_in_parameter_sizes(full_elements, full_sizeof, model->config, 1);
+    size_t full_num_parameters_bytes = 0;
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) { full_num_parameters_bytes += full_elements[i] * full_sizeof[i]; }
+
     // allocate and random init the memory for all the parameters with GPT-2 schema
     // weights ~N(0, 0.02), biases 0, c_proj weights ~N(0, 0.02/(2*L)**0.5)
     // NOTE: assuming all parameters are of the type floatX, could be relaxed later
     mt19937_state init_rng;
     manual_seed(&init_rng, 42);
-    floatX* params_memory_cpu = (floatX*)mallocCheck(model->num_parameters_bytes);
-    memset(params_memory_cpu, 0, model->num_parameters_bytes);
+    floatX* params_memory_cpu = (floatX*)mallocCheck(full_num_parameters_bytes);
+    memset(params_memory_cpu, 0, full_num_parameters_bytes);
     // fill in all the weights with random values
     float residual_scale = 1.0f / sqrtf(2.0f * model->config.num_layers);
     // we have to init all these tensors exactly in the order that PyTorch initializes them
@@ -660,14 +723,14 @@ void gpt_build_from_descriptor(GPT2 *model, const char* descriptor) {
         for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
             // the layernorm parameters are all initialized to 1
             if (l == 0 && (i == 2 || i == 8 || i == 14)) { // only at l = 0 to init these just once
-                for (size_t j = 0; j < model->param_elements[i]; j++) {
+                for (size_t j = 0; j < full_elements[i]; j++) {
                     params_memory_cpu[offset + j] = 1.0f;
                 }
             }
             // weights tensors are handled here
             if ((l == 0 && (i == 0 || i == 1)) // only at l = 0, init the wte and wpe tensors
               || i == 4 || i == 6 || i == 10 || i == 12) {
-                size_t n = model->param_elements[i];
+                size_t n = full_elements[i];
                 size_t layer_offset = 0;
                 if (i == 0) {
                     // for wte tensor (padded vocab) override to init V instead of Vp rows
@@ -690,8 +753,17 @@ void gpt_build_from_descriptor(GPT2 *model, const char* descriptor) {
                 }
                 free(fp32_buffer);
             }
-            offset += model->param_elements[i];
+            offset += full_elements[i];
         }
+    }
+
+    // tensor parallelism: keep only this rank's slice
+    if (multi_gpu_config.tp_size > 1) {
+        floatX* local_cpu = (floatX*)mallocCheck(model->num_parameters_bytes);
+        tp_slice_parameters(local_cpu, params_memory_cpu, model->param_elements, full_elements, model->config,
+                            multi_gpu_config.tp_size, multi_gpu_config.tp_rank);
+        free(params_memory_cpu);
+        params_memory_cpu = local_cpu;
     }
 
     // copy them to GPU
@@ -732,6 +804,13 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
     // we can do this while the copies are already underway
     tokenCheck(inputs, B*T, V);
 
+    // tensor parallelism: this rank computes heads [r*NH/tp, (r+1)*NH/tp) and MLP columns [r*4C/tp, (r+1)*4C/tp)
+    const size_t tp = multi_gpu_config.tp_size;
+    const size_t Cl = C / tp;
+    const size_t NHl = NH / tp;
+    // row-parallel layers produce partial sums that are all-reduced: add their bias on one rank only
+    const bool add_row_bias = multi_gpu_config.tp_rank == 0;
+
     // forward pass
     ParameterTensors params = model->params; // for brevity
     ActivationTensors acts = model->acts;
@@ -767,39 +846,43 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
 
         // get the pointers of the activations for this layer
         floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + l * B * T * C : acts.lnf;
-        floatX* l_qkvr = acts.qkvr + l * B * T * 3*C;
-        floatX* l_atty = acts.atty + l * B * T * C;
+        floatX* l_qkvr = acts.qkvr + l * B * T * 3*Cl;
+        floatX* l_atty = acts.atty + l * B * T * Cl;
         floatX* l_residual2 = acts.residual2 + l * B * T * C;
         floatX* l_ln2 = (model->recompute < 2) ? acts.ln2 + l * B * T * C : acts.lnf;
         float* l_ln2_mean = acts.ln2_mean + l * B * T;
         float* l_ln2_rstd = acts.ln2_rstd + l * B * T;
-        floatX* l_fch = acts.fch + l * B * T * 4*C;
+        floatX* l_fch = acts.fch + l * B * T * 4*Cl;
         // reuse the same activation buffer at each layer, as we'll re-compute the gelu during backward
         // very useful because we dramatically reduce VRAM usage, and may be able to fit larger batch size
-        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*C : acts.fch_gelu;
+        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*Cl : acts.fch_gelu;
         floatX* l_residual3 = acts.residual3 + l * B * T * C;
         floatX* scratch = (floatX*)acts.output; // used for non-cudnn attention, fcproj, attproj, etc.
 
         // now do the forward pass
         #ifdef ENABLE_CUDNN
-        float* l_att = (float*)acts.att + l * B * NH * T; // cuDNN needs a smaller FP32 tensor
-        matmul_forward_cublaslt(l_qkvr, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*C, main_stream);
-        attention_forward_cudnn(l_atty, (float*)l_att, l_qkvr, B, T, NH, C, main_stream);
+        float* l_att = (float*)acts.att + l * B * NHl * T; // cuDNN needs a smaller FP32 tensor
+        matmul_forward_cublaslt(l_qkvr, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*Cl, main_stream);
+        attention_forward_cudnn(l_atty, (float*)l_att, l_qkvr, B, T, NHl, Cl, main_stream);
         #else
-        floatX* l_att = acts.att + l * B * NH * T * T;
+        floatX* l_att = acts.att + l * B * NHl * T * T;
         if (T != model->seq_len) { // unused parts of attention buffer must be zeroed (T-dependent)
-            cudaCheck(cudaMemset(l_att, 0, B * NH * T * T * sizeof(floatX)));
+            cudaCheck(cudaMemset(l_att, 0, B * NHl * T * T * sizeof(floatX)));
         }
         // these are only needed as scratchpads for the forward pass, but
         // need not be stored for backward
-        matmul_forward_cublaslt(scratch, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*C, main_stream);
-        attention_forward(l_atty, l_qkvr, l_att, scratch, B, T, C, NH, main_stream);
+        matmul_forward_cublaslt(scratch, l_ln1, l_qkvw, l_qkvb, B, T, C, 3*Cl, main_stream);
+        attention_forward(l_atty, l_qkvr, l_att, scratch, B, T, Cl, NHl, main_stream);
         #endif
 
-        matmul_forward_cublaslt(scratch, l_atty, l_attprojw, l_attprojb, B, T, C, C, main_stream);
+        // attention output projection is row-parallel: partial sums over this rank's heads, then all-reduce
+        matmul_forward_cublaslt(scratch, l_atty, l_attprojw, add_row_bias ? l_attprojb : NULL, B, T, Cl, C, main_stream);
+        tp_all_reduce(scratch, B * T * C, &multi_gpu_config, main_stream);
         fused_residual_forward5(l_residual2, l_ln2, l_ln2_mean, l_ln2_rstd, residual, scratch, l_ln2w, l_ln2b, B*T, C, main_stream);
-        matmul_forward_cublaslt(l_fch_gelu, l_ln2, l_fcw, l_fcb, B, T, C, 4*C, main_stream, l_fch, model->gelu_fusion);
-        matmul_forward_cublaslt(scratch, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C, main_stream);
+        // MLP: fc is column-parallel (no communication), fcproj is row-parallel (all-reduce)
+        matmul_forward_cublaslt(l_fch_gelu, l_ln2, l_fcw, l_fcb, B, T, C, 4*Cl, main_stream, l_fch, model->gelu_fusion);
+        matmul_forward_cublaslt(scratch, l_fch_gelu, l_fcprojw, add_row_bias ? l_fcprojb : NULL, B, T, 4*Cl, C, main_stream);
+        tp_all_reduce(scratch, B * T * C, &multi_gpu_config, main_stream);
         // last use of this layer's gathered parameters (the fused layernorm below uses replicated ln1/lnf)
         if (zero3) { zero3_release_layer_params(&model->zero3, l % 2, main_stream); }
         // OK, fusion across blocks.
@@ -882,6 +965,10 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     const size_t L = model->config.num_layers;
     const size_t NH = model->config.num_heads;
     const size_t C = model->config.channels;
+    // tensor parallelism: local heads / MLP columns (see gpt2_forward)
+    const size_t tp = multi_gpu_config.tp_size;
+    const size_t Cl = C / tp;
+    const size_t NHl = NH / tp;
 
     ParameterTensors params = model->params; // for brevity
     ParameterTensors grads = model->grads;
@@ -967,14 +1054,14 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + l * B * T * C : acts.lnf;
         float* l_ln1_mean = acts.ln1_mean + l * B * T;
         float* l_ln1_rstd = acts.ln1_rstd + l * B * T;
-        floatX* l_qkvr = acts.qkvr + l * B * T * 3*C;
-        floatX* l_atty = acts.atty + l * B * T * C;
+        floatX* l_qkvr = acts.qkvr + l * B * T * 3*Cl;
+        floatX* l_atty = acts.atty + l * B * T * Cl;
         floatX* l_residual2 = acts.residual2 + l * B * T * C;
         floatX* l_ln2 = (model->recompute < 2) ? acts.ln2 + l * B * T * C : acts.lnf;
         float* l_ln2_mean = acts.ln2_mean + l * B * T;
         float* l_ln2_rstd = acts.ln2_rstd + l * B * T;
-        floatX* l_fch_pre_gelu = acts.fch + l * B * T * 4*C;
-        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*C : acts.fch_gelu;
+        floatX* l_fch_pre_gelu = acts.fch + l * B * T * 4*Cl;
+        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * 4*Cl : acts.fch_gelu;
         // get the pointers of the gradients of the activations for this layer
         // notice that there is no l *, because we just have a single copy, and keep
         // re-using this memory in every Transformer block as we calculate backward pass
@@ -985,33 +1072,37 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         if(model->recompute >= 1) {
             // recompute >= 1 means we recompute gelu. in this case,
             // l_fch_gelu is just a buffer, so re-compute the gelu from l_fch here
-            gelu_forward(l_fch_gelu, l_fch_pre_gelu, B*T*4*C, main_stream);
+            gelu_forward(l_fch_gelu, l_fch_pre_gelu, B*T*4*Cl, main_stream);
         }
-        matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, scratchF, B, T, 4*C, C, main_stream, l_fch_pre_gelu, model->gelu_fusion);
+        // fcproj is row-parallel: its input gradient is this rank's columns only, no communication
+        matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, scratchF, B, T, 4*Cl, C, main_stream, l_fch_pre_gelu, model->gelu_fusion);
         if(model->recompute >= 2) {
             // same as gelu above, l_ln1 and l_ln2 are just buffers if recompute >= 2, recompute them here on demand
             layernorm_forward(l_ln2, l_ln2_mean, l_ln2_rstd, l_residual2, l_ln2w, l_ln2b, B, T, C, main_stream);
         }
-        matmul_backward(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, scratchF, B, T, C, 4 * C, main_stream);
+        // fc is column-parallel: its input gradient is a partial sum over this rank's columns, all-reduce it
+        matmul_backward(dl_btc, dl_fcw, dl_fcb, dl_bt4c, l_ln2, l_fcw, scratchF, B, T, C, 4 * Cl, main_stream);
+        tp_all_reduce(dl_btc, B * T * C, &multi_gpu_config, main_stream);
         // layernorm backward does += to the dresidual, so it correctly accumulates grad from the MLP block above
         layernorm_backward(dresidual, dl_ln2w, dl_ln2b, scratchF, dl_btc, l_residual2, l_ln2w, l_ln2_mean, l_ln2_rstd, B, T, C, main_stream);
-        matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, scratchF, B, T, C, C, main_stream);
+        matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, scratchF, B, T, Cl, C, main_stream);
 
         #ifdef ENABLE_CUDNN
-        float* l_att = (float*)acts.att + l * B * NH * T; // cuDNN needs a smaller FP32 tensor
-        attention_backward_cudnn(dl_bt4c, dl_btc, l_qkvr, l_atty, (float*)l_att, B, T, NH, C, main_stream);
+        float* l_att = (float*)acts.att + l * B * NHl * T; // cuDNN needs a smaller FP32 tensor
+        attention_backward_cudnn(dl_bt4c, dl_btc, l_qkvr, l_atty, (float*)l_att, B, T, NHl, Cl, main_stream);
         #else
-        floatX* l_att = acts.att + l * B * NH * T * T;
+        floatX* l_att = acts.att + l * B * NHl * T * T;
         // we need B x T x (4)C buffers. l_atty and l_fch aren't needed anymore at this point, so reuse their memory
         floatX* buffer_a = l_atty;
         floatX* buffer_b = l_fch_pre_gelu;        // this is B x T x 4C, so even larger than what we need
-        attention_backward(dl_bt4c, buffer_b, scratchX, buffer_a, dl_btc, l_qkvr, l_att, B, T, C, NH, main_stream);
+        attention_backward(dl_bt4c, buffer_b, scratchX, buffer_a, dl_btc, l_qkvr, l_att, B, T, Cl, NHl, main_stream);
         #endif
         if(model->recompute >= 2) {
             layernorm_forward(l_ln1, l_ln1_mean, l_ln1_rstd, residual, l_ln1w, l_ln1b, B, T, C, main_stream);
         }
-        // QKV parameter gradients
-        matmul_backward(dl_btc, dl_qkvw, dl_qkvb, dl_bt4c, l_ln1, l_qkvw, scratchF, B, T, C, 3 * C, main_stream);
+        // QKV parameter gradients (column-parallel: all-reduce the partial input gradient)
+        matmul_backward(dl_btc, dl_qkvw, dl_qkvb, dl_bt4c, l_ln1, l_qkvw, scratchF, B, T, C, 3 * Cl, main_stream);
+        tp_all_reduce(dl_btc, B * T * C, &multi_gpu_config, main_stream);
         // last use of this layer's gathered parameters (ln1 below is replicated)
         if (zero3) { zero3_release_layer_params(&model->zero3, l % 2, main_stream); }
         // layernorm backward does += to dresidual, so it correctly accumulates gradient for the Attention block above
@@ -1029,14 +1120,9 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
                 dl_fcw, dl_fcb,
                 dl_fcprojw, dl_fcprojb
             };
-            const size_t nelem[] = {
-                C, C,
-                3 * C * C, 3 * C,
-                C * C, C,
-                C, C,
-                4 * C * C, 4 * C,
-                C * 4 * C, C
-            };
+            // per-layer sizes of this rank's tensors (smaller than C*C etc. under tensor parallelism)
+            size_t nelem[ZERO2_NUM_BLOCK_TENSORS];
+            for (int j = 0; j < ZERO2_NUM_BLOCK_TENSORS; j++) { nelem[j] = model->param_elements[j + 2] / L; }
             multi_gpu_async_reduce_gradient(pointers, nelem, &multi_gpu_config, main_stream);
         }
     }
@@ -1100,6 +1186,36 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
 
     int num_slices[2] = {1, model->config.num_layers};
     int max_num_block_sums = get_max_num_block_sums(num_slices, 2);
+    if (multi_gpu_config->tp_size > 1) {
+        // Tensor parallelism: gradients of tensor-parallel slices differ between the ranks of a TP group
+        // and are summed across it; replicated tensors have identical gradients on every TP rank and are
+        // counted once. Accumulate the two parts separately.
+        float* sq[2] = {grad_norm_squared, grad_norm_squared + max_num_block_sums};  // 0: replicated, 1: TP-sharded
+        bool first[2] = {true, true};
+        for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+            int k = tp_is_sharded(i) ? 1 : 0;
+            int nl = (i < 2 || i > 13) ? 1 : model->config.num_layers;
+            ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
+            ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
+            if (multi_gpu_config->zero_stage >= 2) {
+                floatX* g = model->zero2.grads_shard + tensor.offset / multi_gpu_config->num_processes;
+                global_norm_squared(sq[k], g, shard.size, shard.size, nl, max_num_block_sums, first[k], main_stream);
+            } else {
+                floatX* g = grads_memory + tensor.offset + shard.offset;
+                global_norm_squared(sq[k], g, shard.size, tensor.size, nl, max_num_block_sums, first[k], main_stream);
+            }
+            first[k] = false;
+        }
+        float part[2];
+        for (int k = 0; k < 2; k++) {
+            global_sum_deterministic(sq[k], sq[k], max_num_block_sums, main_stream);
+            cudaCheck(cudaMemcpy(&part[k], sq[k], sizeof(float), cudaMemcpyDeviceToHost));
+        }
+        float local = part[0] + tp_cpu_float_sum(part[1], multi_gpu_config);
+        // with ZeRO each data-parallel rank holds a different shard; plain DDP holds everything everywhere
+        float total = multi_gpu_config->zero_stage >= 1 ? multi_gpu_cpu_float_sum(local, multi_gpu_config) : local;
+        return sqrtf(total);
+    }
     if (multi_gpu_config->zero_stage >= 2) {
         // grads_shard is contiguous and holds exactly this rank's gradients
         global_norm_squared(grad_norm_squared, model->zero2.grads_shard, multi_gpu_config->shard_num_parameters,
@@ -1263,11 +1379,15 @@ float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
     Note 2: The first term (6 * N) in flops_per_token is all weight matmuls, the
     second is the attention matmul, which is also usually a small contribution.
     */
-    size_t N = model->num_parameters;
+    // count the full model: under tensor parallelism each GPU does 1/tp of the model's flops per token
+    size_t full_elements[NUM_PARAMETER_TENSORS], full_sizeof[NUM_PARAMETER_TENSORS];
+    fill_in_parameter_sizes(full_elements, full_sizeof, model->config, 1);
+    size_t N = 0;
+    for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) { N += full_elements[i]; }
     int L = model->config.num_layers;
     int C = model->config.channels;
     int T = model->seq_len;
-    size_t flops_per_token = 6 * N + (size_t)6 * L * C * T;
+    size_t flops_per_token = (6 * N + (size_t)6 * L * C * T) / multi_gpu_config.tp_size;
     size_t flops_per_step = flops_per_token * num_tokens;
     // express our flops throughput as ratio of A100 bfloat16 peak flops
     float flops_achieved = (float)flops_per_step * (1.0f / dt); // per second
@@ -1532,6 +1652,7 @@ void error_usage() {
     fprintf(stderr, "  -ge <int>   gelu fusion: 0=none, 1=forward, 2=forward+backward (default: 2 for >=SM90, 0 for older GPUs)\n");
     // memory management
     fprintf(stderr, "  -z <int>    zero_stage, Zero Optimization Stage, 0,1,2,3 (default = 0)\n");
+    fprintf(stderr, "  -tp <int>   tensor-parallel size: groups of this many consecutive ranks (default = 1)\n");
     fprintf(stderr, "  -r <int>    recompute: less memory but less speed. (default = 1), 0|1|2 = none,gelu,gelu+ln\n");
     // multi-node settings
     fprintf(stderr, "  -pn <int>    num_processes (default = 1)\n");
@@ -1577,6 +1698,7 @@ int main(int argc, char *argv[]) {
     int gelu_fusion = -1; // 0 = none, 1 = forward, 2 = forward+backward (-1 => per-GPU default)
     int recompute = 1; // recompute during backward setting, 0 = none, 1 = recompute gelu
     int zero_stage = 0; // Zero Optimization Stage for Multi-GPU training
+    int tp_size = 1; // tensor-parallel size (Megatron-style, within a node)
     int hellaswag_eval = 0;
     // multi-node settings
     int num_processes = 1;  // this should be set by the slurm environment
@@ -1597,6 +1719,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'n' && argv[i][2] == '\0') { checkpoint_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'y') { resume = atoi(argv[i+1]); }
         else if (argv[i][1] == 'b') { B = atoi(argv[i+1]); } // Per-GPU (micro) batch size
+        else if (argv[i][1] == 't' && argv[i][2] == 'p') { tp_size = atoi(argv[i+1]); }
         else if (argv[i][1] == 't') { T = atoi(argv[i+1]); }
         else if (argv[i][1] == 'd') { total_batch_size = atoi(argv[i+1]); }
         else if (argv[i][1] == 'l' && argv[i][2] == '\0') { learning_rate = atof(argv[i+1]); }
@@ -1631,6 +1754,8 @@ int main(int argc, char *argv[]) {
     }
 
     multi_gpu_config = multi_gpu_config_init(num_processes, process_rank, gpus_per_node, server_ip, fs_path, nccl_init_method);
+    // from here on, process_rank / num_processes refer to the data-parallel group (see MultiGpuConfig)
+    multi_gpu_setup_tensor_parallel(&multi_gpu_config, tp_size);
     common_start(override_enable_tf32, false); // common init code for train/test/profile
 
     // should do a bit more error checking here
@@ -1697,6 +1822,19 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    // tensor parallelism slices the weights, so it can only start from a random init, and no single rank
+    // holds a full checkpoint
+    if (multi_gpu_config.tp_size > 1 && (resuming == 1 || ends_with_bin(load_filename) || checkpoint_every > 0)) {
+        printf0("Error: tensor parallelism needs a model descriptor (e.g. -e d12) and no checkpoints (-n 0 -y 0)\n");
+        exit(EXIT_FAILURE);
+    }
+    // text generation runs a forward pass on rank 0 only; with tensor parallelism or ZeRO-3 the forward
+    // pass is collective, so it would hang
+    if ((multi_gpu_config.tp_size > 1 || zero_stage == 3) && sample_every > 0) {
+        printf0("Note: disabling text generation (-s) with tensor parallelism / ZeRO-3\n");
+        sample_every = 0;
+    }
+
     // build the GPT-2 model
     GPT2 model;
     gpt2_init_common(&model);
@@ -1726,6 +1864,10 @@ int main(int argc, char *argv[]) {
     printf0("| channels C            | %-50d |\n", model.config.channels);
     printf0("| num_parameters        | %-50zu |\n", model.num_parameters);
     printf0("+-----------------------+----------------------------------------------------+\n");
+    if (model.config.num_heads % multi_gpu_config.tp_size != 0) {
+        printf0("Error: tensor-parallel size %d must divide the number of heads %d\n", multi_gpu_config.tp_size, model.config.num_heads);
+        exit(EXIT_FAILURE);
+    }
 
     // build DataLoaders for both train and val
     int permute_train_loader = (overfit_single_batch == 1) ? 0 : 1;
@@ -1770,7 +1912,9 @@ int main(int argc, char *argv[]) {
         printf0("Error: ZeRO-3 does not support writing or resuming from checkpoints yet (use -n 0 -y 0)\n");
         exit(EXIT_FAILURE);
     }
-    printf0("| num_processes         | %-50d |\n", multi_gpu_config.num_processes);
+    printf0("| num_processes         | %-50d |\n", multi_gpu_config.world_size);
+    printf0("| tensor_parallel       | %-50d |\n", multi_gpu_config.tp_size);
+    printf0("| data_parallel         | %-50d |\n", multi_gpu_config.num_processes);
     printf0("| zero_stage            | %-50d |\n", multi_gpu_config.zero_stage);
     printf0("+-----------------------+----------------------------------------------------+\n");
 
@@ -1788,9 +1932,9 @@ int main(int argc, char *argv[]) {
     printf0("=> setting grad_accum_steps=%d\n", grad_accum_steps);
 
     // set up logging
-    if (multi_gpu_config.process_rank == 0) { create_dir_if_not_exists(output_log_dir); }
+    if (multi_gpu_config.world_rank == 0) { create_dir_if_not_exists(output_log_dir); }
     Logger logger;
-    logger_init(&logger, output_log_dir, multi_gpu_config.process_rank, resume);
+    logger_init(&logger, output_log_dir, multi_gpu_config.world_rank, resume);
 
     // set up the Tokenizer
     Tokenizer tokenizer;

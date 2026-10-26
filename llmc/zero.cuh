@@ -59,9 +59,16 @@ void mpi_check(int status, const char *file, int line) {
 // ----------------------------------------------------------------------------
 // Parameters specific to training on multiple GPUs.
 typedef struct {
-    int process_rank;      // Rank of this process among all processes. 0 if no multi-GPU.
-    int num_processes;     // Total number of processes. 1 if no multi-GPU.
+    // With tensor parallelism (tp_size > 1), process_rank / num_processes / nccl_comm describe the
+    // data-parallel group (ranks holding the same tensor-parallel slice), so all data-parallel and
+    // ZeRO code works unchanged. world_rank / world_size describe all processes.
+    int process_rank;      // Rank of this process in its data-parallel group. 0 if no multi-GPU.
+    int num_processes;     // Size of the data-parallel group. 1 if no multi-GPU.
     int local_device_idx;  // This process GPU index on current machine. 0 if no multi-GPU.
+    int world_rank;        // Rank among all processes.
+    int world_size;        // Total number of processes.
+    int tp_rank;           // Rank in the tensor-parallel group (0 .. tp_size-1).
+    int tp_size;           // Tensor-parallel degree. 1 = no tensor parallelism.
 
     // Zero Redundancy Optimizer stage - https://fairscale.readthedocs.io/en/stable/deep_dive/oss_sdp_fsdp.html
     // 0-Disabled
@@ -71,7 +78,9 @@ typedef struct {
     int zero_stage;
     size_t shard_num_parameters;
 #ifdef MULTI_GPU
-    ncclComm_t nccl_comm;       // NCCL communication primitive, used for collective multi-GPU work.
+    ncclComm_t world_comm;      // NCCL communicator over all processes.
+    ncclComm_t tp_comm;         // NCCL communicator over the tensor-parallel group (valid if tp_size > 1).
+    ncclComm_t nccl_comm;       // NCCL communicator over the data-parallel group, used for gradients and ZeRO.
     cudaStream_t nccl_stream;   // CUDA Stream to perform NCCL operations.
     cudaEvent_t compute_nccl_sync; // Event used to synchronize NCCL with the compute
     float* unified_buffer;
@@ -447,6 +456,12 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     }
     cudaCheck(cudaSetDevice(result.local_device_idx));
     ncclCheck(ncclCommInitRank(&result.nccl_comm, result.num_processes, nccl_id, result.process_rank));
+    // no tensor parallelism until multi_gpu_setup_tensor_parallel: the data-parallel group is everyone
+    result.world_comm = result.nccl_comm;
+    result.world_rank = result.process_rank;
+    result.world_size = result.num_processes;
+    result.tp_rank = 0;
+    result.tp_size = 1;
     cudaCheck(cudaStreamCreate(&result.nccl_stream));
     // event without timing for maximum performance
     cudaCheck(cudaEventCreate(&result.compute_nccl_sync, cudaEventDisableTiming));
@@ -461,13 +476,45 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     result.process_rank = 0;
     result.num_processes = 1;
     result.local_device_idx = 0;
+    result.world_rank = 0;
+    result.world_size = 1;
+    result.tp_rank = 0;
+    result.tp_size = 1;
     return result;
+#endif
+}
+
+// Split the processes into tensor-parallel groups of tp_size consecutive ranks (one node with the
+// default rank placement) and data-parallel groups across them. Afterwards process_rank, num_processes
+// and nccl_comm refer to the data-parallel group.
+void multi_gpu_setup_tensor_parallel(MultiGpuConfig* config, int tp_size) {
+    if (tp_size <= 1) { return; }
+#ifdef MULTI_GPU
+    if (config->world_size % tp_size != 0) {
+        fprintf(stderr, "Tensor-parallel size %d must divide the number of processes %d\n", tp_size, config->world_size);
+        exit(EXIT_FAILURE);
+    }
+    int tp_rank = config->world_rank % tp_size;
+    int dp_rank = config->world_rank / tp_size;
+    config->tp_size = tp_size;
+    config->tp_rank = tp_rank;
+    ncclCheck(ncclCommSplit(config->world_comm, dp_rank, tp_rank, &config->tp_comm, NULL));
+    ncclCheck(ncclCommSplit(config->world_comm, tp_rank, dp_rank, &config->nccl_comm, NULL));
+    config->process_rank = dp_rank;
+    config->num_processes = config->world_size / tp_size;
+#else
+    fprintf(stderr, "Tensor parallelism needs a multi-GPU build\n");
+    exit(EXIT_FAILURE);
 #endif
 }
 
 void multi_gpu_config_free(MultiGpuConfig* config) {
 #ifdef MULTI_GPU
-    ncclCheck(ncclCommDestroy(config->nccl_comm));
+    if (config->tp_size > 1) {
+        ncclCheck(ncclCommDestroy(config->tp_comm));
+        ncclCheck(ncclCommDestroy(config->nccl_comm));
+    }
+    ncclCheck(ncclCommDestroy(config->world_comm));
     cudaCheck(cudaStreamDestroy(config->nccl_stream));
     cudaCheck(cudaEventDestroy(config->compute_nccl_sync));
     cudaCheck(cudaFree(config->unified_buffer));
@@ -553,7 +600,7 @@ void multi_gpu_async_reduce_gradient(
 }
 
 // convenience macro that only prints if the rank of process is zero
-#define printf0(...) if (::multi_gpu_config.process_rank == 0) { printf(__VA_ARGS__); }
+#define printf0(...) if (::multi_gpu_config.world_rank == 0) { printf(__VA_ARGS__); }
 
 void set_zero_configs(MultiGpuConfig* config, int zero_stage, size_t total_parameters) {
     config->zero_stage = 0;
@@ -594,6 +641,30 @@ float multi_gpu_cpu_float_sum(float value, MultiGpuConfig* config) {
     return *unified_buffer;
 #else
     return value;
+#endif
+}
+
+// Sum of a single CPU value across the tensor-parallel group.
+float tp_cpu_float_sum(float value, MultiGpuConfig* config) {
+#ifdef MULTI_GPU
+    if (config->tp_size == 1) return value;
+    float* unified_buffer = config->unified_buffer;
+    *unified_buffer = value;
+    ncclCheck(ncclAllReduce(unified_buffer, unified_buffer, 1, ncclFloat, ncclSum, config->tp_comm, config->nccl_stream));
+    cudaCheck(cudaDeviceSynchronize());
+    return *unified_buffer;
+#else
+    return value;
+#endif
+}
+
+// In-place sum of a buffer across the tensor-parallel group, ordered on `stream` (the compute stream):
+// the partial outputs of row-parallel layers in forward, and the partial input gradients of
+// column-parallel layers in backward.
+void tp_all_reduce(floatX* buf, size_t n, MultiGpuConfig* config, cudaStream_t stream) {
+#ifdef MULTI_GPU
+    if (config->tp_size == 1) return;
+    ncclCheck(ncclAllReduce(buf, buf, n, ncclFloatX, ncclSum, config->tp_comm, stream));
 #endif
 }
 
