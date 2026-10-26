@@ -562,13 +562,13 @@ void set_zero_configs(MultiGpuConfig* config, int zero_stage, size_t total_param
     if (zero_stage == 0) {
         printf0("| Zero Optimization is disabled                                              |\n");
     }
-     else if (zero_stage == 1 || zero_stage == 2) {
+     else if (zero_stage == 1 || zero_stage == 2 || zero_stage == 3) {
         if (total_parameters % config->num_processes != 0) {
             printf0("| Zero Optimization is disabled, Can't equally partition parameters          |\n");
             config->zero_stage = 0;
         }
-        else if (zero_stage == 2 && config->num_processes == 1) {
-            printf0("| Zero Stage 2 needs more than one process, disabling Zero Optimization      |\n");
+        else if (zero_stage >= 2 && config->num_processes == 1) {
+            printf0("| Zero Stage 2/3 needs more than one process, disabling Zero Optimization    |\n");
             config->zero_stage = 0;
         }
         else {
@@ -577,7 +577,7 @@ void set_zero_configs(MultiGpuConfig* config, int zero_stage, size_t total_param
         }
     }
     else{
-        printf0("| Disabling Zero Optimization, Zero Stage3 is not yet supported              |\n");
+        printf0("| Disabling Zero Optimization, only Zero Stage 0-3 are supported             |\n");
         config->zero_stage = 0;
     }
 }

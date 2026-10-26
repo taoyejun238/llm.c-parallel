@@ -71,6 +71,8 @@ GPT-2 Transformer Neural Net training loop. See README.md for usage.
 #include "llmc/zero.cuh"
 // defines: Zero2State, zero2_init, zero2_free, zero2_reduce_layer, zero2_reduce_full_grads
 #include "llmc/zero2.cuh"
+// defines: Zero3State, zero3_init, zero3_free, zero3_shard_params, zero3_gather_layer
+#include "llmc/zero3.cuh"
 // ----------------------------------------------------------------------------
 // global vars for I/O
 char filename_buffer[512];
@@ -296,8 +298,9 @@ typedef struct {
     ParameterTensors grads;
     void* grads_memory;
 
-    size_t grads_memory_numel;    
-    Zero2State zero2;             
+    size_t grads_memory_numel;
+    Zero2State zero2;
+    Zero3State zero3;          // ZeRO-3 parameter shard and buffers, used only when zero_stage == 3
     // buffers for the AdamW optimizer
     float* m_memory;
     float* v_memory;
@@ -342,6 +345,7 @@ void gpt2_init_common(GPT2 *model) {
     model->grads_memory = NULL;
     model->grads_memory_numel = 0;
     memset(&model->zero2, 0, sizeof(Zero2State));
+    memset(&model->zero3, 0, sizeof(Zero3State));
     model->workload_indices = NULL; // on cpu, for encoder_backward
     model->bucket_info = NULL; // on cpu, for encoder_backward
     // memory lazily initialized in update()
@@ -372,7 +376,7 @@ void gpt2_allocate_weights(GPT2 *model) {
 
 void gpt2_allocate_state(GPT2 *model, int B, int T) {
     assert(model->grads_memory == nullptr);
-    if (multi_gpu_config.zero_stage == 2) {
+    if (multi_gpu_config.zero_stage >= 2) {
         // only wte, wpe, lnfw, lnfb keep a full-size gradient buffer
         size_t nonblock_elements[NUM_PARAMETER_TENSORS];
         model->grads_memory_numel = 0;
@@ -389,6 +393,34 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
         for (int i = 2; i <= 13; i++) { grad_ptrs[i] = NULL; }
         zero2_init(&model->zero2, model->param_elements, model->config.num_layers,
                    multi_gpu_config.shard_num_parameters, multi_gpu_config.num_processes);
+        if (multi_gpu_config.zero_stage == 3) {
+            // keep only this rank's shard of the sharded tensors, and full copies of the replicated ones
+            zero3_init(&model->zero3, &model->zero2, multi_gpu_config.shard_num_parameters);
+            zero3_shard_params(&model->zero3, &model->zero2, (floatX*)model->params_memory, model->param_elements,
+                               model->config.num_layers, multi_gpu_config.process_rank, multi_gpu_config.num_processes);
+            void* full_params_memory = model->params_memory;
+            ParameterTensors full_params = model->params;
+            size_t replicated_elements[NUM_PARAMETER_TENSORS];
+            size_t replicated_numel = 0;
+            for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+                replicated_elements[i] = zero3_is_sharded(i) ? 0 : model->param_elements[i];
+                replicated_numel += replicated_elements[i];
+            }
+            printf0("ZeRO-3: keeping %d MiB of replicated parameters (wte, wpe, ln1, lnf)\n",
+                    (int)((replicated_numel * sizeof(floatX)) >> 20));
+            model->params_memory = malloc_and_point_parameters(&model->params, replicated_elements, model->param_sizeof);
+            floatX** param_ptrs = (floatX**)&model->params;
+            floatX** full_param_ptrs = (floatX**)&full_params;
+            for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+                if (zero3_is_sharded(i)) {
+                    param_ptrs[i] = NULL;  // only reachable through the ZeRO-3 layer buffers
+                } else {
+                    cudaCheck(cudaMemcpy(param_ptrs[i], full_param_ptrs[i], model->param_elements[i] * sizeof(floatX),
+                                         cudaMemcpyDeviceToDevice));
+                }
+            }
+            cudaCheck(cudaFree(full_params_memory));
+        }
     } else {
         printf0("allocating %d MiB for parameter gradients\n", (int)round(model->num_parameters * sizeof(floatX) / (1024 * 1024)));
         model->grads_memory = malloc_and_point_parameters(&model->grads, model->param_elements, model->param_sizeof);
@@ -703,6 +735,8 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
     // forward pass
     ParameterTensors params = model->params; // for brevity
     ActivationTensors acts = model->acts;
+    const bool zero3 = multi_gpu_config.zero_stage == 3;
+    if (zero3) { zero3_gather_layer(&model->zero3, &model->zero2, 0, 0, &multi_gpu_config); }
     encoder_forward(acts.encoded, model->inputs, params.wte, params.wpe, B, T, C, main_stream); // encoding goes into residual[0]
 
     // first layernorm isn't fused
@@ -714,16 +748,22 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
         floatX* residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
 
         // get the pointers of the weights for this layer
-        floatX* l_qkvw = params.qkvw + l * 3*C * C;
-        floatX* l_qkvb = params.qkvb + l * 3*C;
-        floatX* l_attprojw = params.attprojw + l * C * C;
-        floatX* l_attprojb = params.attprojb + l * C;
-        floatX* l_ln2w = params.ln2w + l * C;
-        floatX* l_ln2b = params.ln2b + l * C;
-        floatX* l_fcw = params.fcw + l * 4*C * C;
-        floatX* l_fcb = params.fcb + l * 4*C;
-        floatX* l_fcprojw = params.fcprojw + l * C * 4*C;
-        floatX* l_fcprojb = params.fcprojb + l * C;
+        floatX* lp[ZERO2_NUM_BLOCK_TENSORS];
+        if (zero3) {
+            // prefetch the next layer while this one computes, then wait for this layer's all-gather
+            if (l + 1 < L) { zero3_gather_layer(&model->zero3, &model->zero2, l + 1, (l + 1) % 2, &multi_gpu_config); }
+            zero3_acquire_layer_params(&model->zero3, &model->zero2, l % 2, main_stream, lp);
+        } else {
+            floatX** ps = (floatX**)&params;  // params.ln1w .. params.fcprojb are entries 2..13
+            for (int j = 0; j < ZERO2_NUM_BLOCK_TENSORS; j++) {
+                lp[j] = ps[j + 2] + l * (model->param_elements[j + 2] / L);
+            }
+        }
+        floatX* l_qkvw = lp[2];      floatX* l_qkvb = lp[3];
+        floatX* l_attprojw = lp[4];  floatX* l_attprojb = lp[5];
+        floatX* l_ln2w = lp[6];      floatX* l_ln2b = lp[7];
+        floatX* l_fcw = lp[8];       floatX* l_fcb = lp[9];
+        floatX* l_fcprojw = lp[10];  floatX* l_fcprojb = lp[11];
 
         // get the pointers of the activations for this layer
         floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + l * B * T * C : acts.lnf;
@@ -760,6 +800,8 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
         fused_residual_forward5(l_residual2, l_ln2, l_ln2_mean, l_ln2_rstd, residual, scratch, l_ln2w, l_ln2b, B*T, C, main_stream);
         matmul_forward_cublaslt(l_fch_gelu, l_ln2, l_fcw, l_fcb, B, T, C, 4*C, main_stream, l_fch, model->gelu_fusion);
         matmul_forward_cublaslt(scratch, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, 4*C, C, main_stream);
+        // last use of this layer's gathered parameters (the fused layernorm below uses replicated ln1/lnf)
+        if (zero3) { zero3_release_layer_params(&model->zero3, l % 2, main_stream); }
         // OK, fusion across blocks.
         if(l+1 != L) {
             floatX* l_ln1 = (model->recompute < 2) ? acts.ln1 + (l + 1) * B * T * C : acts.lnf;
@@ -818,7 +860,8 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     }
     NVTX_RANGE_FN();
     bool last_step = micro_step == grad_accum_steps - 1;
-    const bool zero2 = multi_gpu_config.zero_stage == 2;
+    const bool zero2 = multi_gpu_config.zero_stage >= 2;  // ZeRO-3 shards gradients the same way as ZeRO-2
+    const bool zero3 = multi_gpu_config.zero_stage == 3;
     // on the first micro-step zero the gradients, as we're about to += accumulate into them
     if (micro_step == 0) {
         // there are currently two state vars during the gradient accumulation inner loop:
@@ -843,6 +886,8 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     ParameterTensors params = model->params; // for brevity
     ParameterTensors grads = model->grads;
     ActivationTensors acts = model->acts;
+    // start gathering the last layer's parameters, overlapping with the classifier backward
+    if (zero3) { zero3_gather_layer(&model->zero3, &model->zero2, L - 1, (L - 1) % 2, &multi_gpu_config); }
 
     // accumulate the losses inside acts.losses, and kick off the backward pass inside the fused classifier
     NvtxRange classifier_and_loss_range("classifier_and_loss");
@@ -882,14 +927,25 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         residual = l == 0 ? acts.encoded : acts.residual3 + (l-1) * B * T * C;
 
         // get the pointers of the weights for this layer
-        floatX* l_ln1w = params.ln1w + l * C;
+        floatX* lp[ZERO2_NUM_BLOCK_TENSORS];
+        if (zero3) {
+            // prefetch the previous layer while this one computes, then wait for this layer's all-gather
+            if (l > 0) { zero3_gather_layer(&model->zero3, &model->zero2, l - 1, (l - 1) % 2, &multi_gpu_config); }
+            zero3_acquire_layer_params(&model->zero3, &model->zero2, l % 2, main_stream, lp);
+        } else {
+            floatX** ps = (floatX**)&params;  // params.ln1w .. params.fcprojb are entries 2..13
+            for (int j = 0; j < ZERO2_NUM_BLOCK_TENSORS; j++) {
+                lp[j] = ps[j + 2] + l * (model->param_elements[j + 2] / L);
+            }
+        }
+        floatX* l_ln1w = params.ln1w + l * C;  // ln1 is replicated under ZeRO-3
         floatX* l_ln1b = params.ln1b + l * C;
-        floatX* l_qkvw = params.qkvw + l * 3*C * C;
-        floatX* l_attprojw = params.attprojw + l * C * C;
-        floatX* l_ln2w = params.ln2w + l * C;
-        floatX* l_ln2b = params.ln2b + l * C;
-        floatX* l_fcw = params.fcw + l * 4*C * C;
-        floatX* l_fcprojw = params.fcprojw + l * C * 4*C;
+        floatX* l_qkvw = lp[2];
+        floatX* l_attprojw = lp[4];
+        floatX* l_ln2w = lp[6];
+        floatX* l_ln2b = lp[7];
+        floatX* l_fcw = lp[8];
+        floatX* l_fcprojw = lp[10];
         // get the pointers of the gradients of the weights for this layer
         floatX* dg[ZERO2_NUM_BLOCK_TENSORS];
         if (zero2) {
@@ -956,6 +1012,8 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
         }
         // QKV parameter gradients
         matmul_backward(dl_btc, dl_qkvw, dl_qkvb, dl_bt4c, l_ln1, l_qkvw, scratchF, B, T, C, 3 * C, main_stream);
+        // last use of this layer's gathered parameters (ln1 below is replicated)
+        if (zero3) { zero3_release_layer_params(&model->zero3, l % 2, main_stream); }
         // layernorm backward does += to dresidual, so it correctly accumulates gradient for the Attention block above
         layernorm_backward(dresidual, dl_ln1w, dl_ln1b, scratchF, dl_btc, residual, l_ln1w, l_ln1_mean, l_ln1_rstd, B, T, C, main_stream);
 
@@ -1042,7 +1100,7 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
 
     int num_slices[2] = {1, model->config.num_layers};
     int max_num_block_sums = get_max_num_block_sums(num_slices, 2);
-    if (multi_gpu_config->zero_stage == 2) {
+    if (multi_gpu_config->zero_stage >= 2) {
         // grads_shard is contiguous and holds exactly this rank's gradients
         global_norm_squared(grad_norm_squared, model->zero2.grads_shard, multi_gpu_config->shard_num_parameters,
                             0, 1, max_num_block_sums, true, main_stream);
@@ -1130,10 +1188,18 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         // - the token embeddings are weight shared and participate in the final projection to logits
         // - the position embeddings actively participate at every forward/backward pass
         float wd = (i == 0 || i == 1 || i == 4 || i == 6 || i == 10 || i == 12) ? weight_decay : 0.0f;
-        floatX* param_ptr = (floatX*)model->params_memory + local_offset_full;
+        // full copy of tensor i (always the case before ZeRO-3; for ZeRO-3 only for the replicated tensors)
+        floatX* param_base = ((floatX**)&model->params)[i];
+        floatX* param_ptr = param_base + shard.offset;
+        ptrdiff_t param_stride = tensor.size;
+        const bool param_sharded = multi_gpu_config->zero_stage == 3 && zero3_is_sharded(i);
+        if (param_sharded) {
+            param_ptr = model->zero3.param_shard + local_offset_partial;
+            param_stride = shard.size;  // same layout as m/v
+        }
         floatX* grad_ptr = (floatX*)model->grads_memory + local_offset_full;
         ptrdiff_t grad_stride = tensor.size;
-        if (multi_gpu_config->zero_stage == 2) {
+        if (multi_gpu_config->zero_stage >= 2) {
             grad_ptr = model->zero2.grads_shard + local_offset_partial;
             grad_stride = shard.size;  // same layout as m/v
         }
@@ -1146,23 +1212,24 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         if(init_state && model->master_weights != nullptr ) {
             size_t grid_size = CEIL_DIV(shard.size, 512);
             copy_and_cast_kernel<<<dim3(grid_size, num_layers), 512, 0, main_stream>>>(master_ptr, param_ptr, shard.size,
-                                                                     shard.size, tensor.size);
+                                                                     shard.size, param_stride);
             cudaCheck(cudaGetLastError());
         }
 
         if (init_from_master_only) {
             // when resuming training from a checkpoint with master weights (allows changing precision)
-            init_from_master(param_ptr, master_ptr, shard.size, tensor.size, shard.size, num_layers, seed, main_stream);
+            init_from_master(param_ptr, master_ptr, shard.size, param_stride, shard.size, num_layers, seed, main_stream);
         } else {
             // ok finally call the kernel to update the weights with AdamW
             adamw_update(param_ptr, master_ptr, grad_ptr,
                         m_ptr, v_ptr,
-                        shard.size, tensor.size, grad_stride, shard.size, num_layers,
+                        shard.size, param_stride, grad_stride, shard.size, num_layers,
                         learning_rate,
                         beta1, beta2, t, eps, wd, grad_scale, seed, main_stream);
         }
 
-        if (multi_gpu_config->zero_stage >= 1) {
+        // ZeRO-3 sharded tensors are not gathered here: they are gathered layer by layer in forward/backward
+        if (multi_gpu_config->zero_stage >= 1 && !param_sharded) {
 #if MULTI_GPU
             // all-gather must wait for adamw_update on the compute stream
             cudaCheck(cudaEventRecord(multi_gpu_config->compute_nccl_sync, main_stream));
@@ -1171,7 +1238,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
             for(int l = 0; l < num_layers; ++l) {
                 // gather updated shards of model->params_memory from each process
                 ncclCheck(ncclAllGather(param_ptr + l * tensor.size,
-                                        (floatX*) model->params_memory + tensor.offset + l * tensor.size,
+                                        param_base + l * tensor.size,
                                         shard.size, ncclFloatX,
                                         multi_gpu_config->nccl_comm, multi_gpu_config->nccl_stream));
             }
@@ -1216,6 +1283,7 @@ void gpt2_free(GPT2 *model) {
     cudaFreeCheck(&model->params_memory);
     cudaFreeCheck(&model->grads_memory);
     zero2_free(&model->zero2);
+    zero3_free(&model->zero3);
     cudaFreeCheck(&model->m_memory);
     cudaFreeCheck(&model->v_memory);
     cudaFreeCheck(&model->master_weights);
@@ -1697,6 +1765,11 @@ int main(int argc, char *argv[]) {
 
     // pretty print in a table the multi-gpu configuration as well
     set_zero_configs(&multi_gpu_config, zero_stage, model.num_parameters);
+    if (multi_gpu_config.zero_stage == 3 && (checkpoint_every > 0 || resuming == 1)) {
+        // with ZeRO-3 no rank holds the full parameters, which checkpoint writing/loading assumes
+        printf0("Error: ZeRO-3 does not support writing or resuming from checkpoints yet (use -n 0 -y 0)\n");
+        exit(EXIT_FAILURE);
+    }
     printf0("| num_processes         | %-50d |\n", multi_gpu_config.num_processes);
     printf0("| zero_stage            | %-50d |\n", multi_gpu_config.zero_stage);
     printf0("+-----------------------+----------------------------------------------------+\n");
