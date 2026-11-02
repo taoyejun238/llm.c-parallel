@@ -1,0 +1,27 @@
+Loading aquarius
+  Loading requirement: gcc/8.3.1
+===== tp8_b8: -tp 8 -b 8 =====
+device memory usage: 31113 MiB / 40339 MiB
+memory per sequence: 1694 MiB
+step    8/8 | loss 8.994626 (+nanz)| norm 30.3170 (+nanz)| lr 3.00e-04 | 1428.22 ms | 37.5% bf16 MFU | 22928 tok/s
+total average iteration time: 1429.246306 ms
+===== pp8_b4: -pp 8 -b 4 =====
+device memory usage: 38903 MiB / 40339 MiB
+memory per sequence: 5336 MiB
+step    8/8 | loss 8.871813 (+nanz)| norm 9.2790 (+nanz)| lr 3.00e-04 | 1589.59 ms | 33.7% bf16 MFU | 20629 tok/s
+total average iteration time: 1588.539720 ms
+===== pp8_b2: -pp 8 -b 2 =====
+device memory usage: 28231 MiB / 40339 MiB
+memory per sequence: 5336 MiB
+step    8/8 | loss 11.037210 (+nanz)| norm 7.5558 (+nanz)| lr 3.00e-04 | 1325.73 ms | 40.4% bf16 MFU | 24729 tok/s
+total average iteration time: 1325.082387 ms
+===== tp2_pp4_b4: -tp 2 -pp 4 -b 4 =====
+device memory usage: 31055 MiB / 40339 MiB
+memory per sequence: 3240 MiB
+step    8/8 | loss 8.953443 (+nanz)| norm 9.6318 (+nanz)| lr 3.00e-04 | 1377.26 ms | 38.9% bf16 MFU | 23801 tok/s
+total average iteration time: 1376.685551 ms
+===== tp4_pp2_b8: -tp 4 -pp 2 -b 8 =====
+device memory usage: 35629 MiB / 40339 MiB
+memory per sequence: 2192 MiB
+step    8/8 | loss 8.652424 (+nanz)| norm 15.2091 (+nanz)| lr 3.00e-04 | 1399.73 ms | 38.2% bf16 MFU | 23394 tok/s
+total average iteration time: 1400.813494 ms

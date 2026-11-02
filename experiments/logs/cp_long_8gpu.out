@@ -1,0 +1,29 @@
+Loading aquarius
+  Loading requirement: gcc/8.3.1
+===== t4096_cp1: -n 1 -t 4096 -cp 1 =====
+device memory usage: 8467 MiB / 40339 MiB
+memory per sequence: 5931 MiB
+step   10/10 | loss 7.533785 (+nanz)| norm 1.8196 (+nanz)| lr 3.00e-04 | 71.07 ms | 18.2% bf16 MFU | 57691 tok/s
+===== t4096_cp2: -n 2 -t 4096 -cp 2 =====
+device memory usage: 7249 MiB / 40339 MiB
+memory per sequence: 2989 MiB
+step   10/10 | loss 7.535886 (+nanz)| norm 1.8253 (+nanz)| lr 3.00e-04 | 52.50 ms | 12.3% bf16 MFU | 76508 tok/s
+===== t4096_cp4: -n 4 -t 4096 -cp 4 =====
+device memory usage: 6199 MiB / 40339 MiB
+memory per sequence: 1506 MiB
+step   10/10 | loss 7.535583 (+nanz)| norm 1.8210 (+nanz)| lr 3.00e-04 | 38.34 ms | 8.5% bf16 MFU | 103708 tok/s
+===== t4096_cp8: -n 8 -t 4096 -cp 8 =====
+device memory usage: 5457 MiB / 40339 MiB
+memory per sequence: 765 MiB
+step   10/10 | loss 7.532897 (+nanz)| norm 1.8253 (+nanz)| lr 3.00e-04 | 32.11 ms | 5.0% bf16 MFU | 127220 tok/s
+===== t16384_cp2: -n 2 -t 16384 -cp 2 =====
+out of memory
+out of memory
+===== t16384_cp4: -n 4 -t 16384 -cp 4 =====
+device memory usage: 25831 MiB / 40339 MiB
+memory per sequence: 20994 MiB
+step   10/10 | loss 7.449441 (+nanz)| norm 1.7466 (+nanz)| lr 3.00e-04 | 276.28 ms | 8.2% bf16 MFU | 59320 tok/s
+===== t16384_cp8: -n 8 -t 16384 -cp 8 =====
+device memory usage: 15381 MiB / 40339 MiB
+memory per sequence: 10545 MiB
+step   10/10 | loss 7.459020 (+nanz)| norm 1.7325 (+nanz)| lr 3.00e-04 | 167.30 ms | 6.8% bf16 MFU | 97860 tok/s
