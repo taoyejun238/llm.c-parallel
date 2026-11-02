@@ -59,19 +59,30 @@ void mpi_check(int status, const char *file, int line) {
 // ----------------------------------------------------------------------------
 // Parameters specific to training on multiple GPUs.
 typedef struct {
-    // With tensor parallelism (tp_size > 1), process_rank / num_processes / nccl_comm describe the
-    // data-parallel group (ranks holding the same tensor-parallel slice), so all data-parallel and
-    // ZeRO code works unchanged. world_rank / world_size describe all processes.
-    int process_rank;      // Rank of this process in its data-parallel group. 0 if no multi-GPU.
-    int num_processes;     // Size of the data-parallel group. 1 if no multi-GPU.
+    // The processes form a dp x pp x cp x tp grid (tp varies fastest). process_rank / num_processes /
+    // nccl_comm describe the gradient group: the ranks holding the same model slice (same tp and pp rank),
+    // i.e. the data-parallel ranks times the context-parallel ranks, so all gradient and ZeRO code works
+    // unchanged. dp_rank / dp_size (which batches to load) exclude context parallelism.
+    // world_rank / world_size describe all processes.
+    int process_rank;      // Rank of this process in its gradient group. 0 if no multi-GPU.
+    int num_processes;     // Size of the gradient group (dp_size * cp_size). 1 if no multi-GPU.
     int local_device_idx;  // This process GPU index on current machine. 0 if no multi-GPU.
     int world_rank;        // Rank among all processes.
     int world_size;        // Total number of processes.
+    int dp_rank;           // Data-parallel rank: selects the batches this process loads.
+    int dp_size;           // Data-parallel degree.
     int tp_rank;           // Rank in the tensor-parallel group (0 .. tp_size-1).
     int tp_size;           // Tensor-parallel degree. 1 = no tensor parallelism.
     // Megatron sequence parallelism (needs tp_size > 1): outside the attention/MLP matmuls (LayerNorms,
     // residual stream) each TP rank keeps only its 1/tp of the tokens instead of a full replica.
     bool sequence_parallel;
+    // Context parallelism: every sequence is split into cp_size contiguous chunks, cp rank r holds tokens
+    // [r * T / cp_size, (r + 1) * T / cp_size) of each sequence through the whole model.
+    int cp_rank;
+    int cp_size;           // 1 = no context parallelism.
+    // Pipeline parallelism: stage pp_rank holds layers [pp_rank * L / pp_size, (pp_rank + 1) * L / pp_size).
+    int pp_rank;
+    int pp_size;           // 1 = no pipeline parallelism.
 
     // Zero Redundancy Optimizer stage - https://fairscale.readthedocs.io/en/stable/deep_dive/oss_sdp_fsdp.html
     // 0-Disabled
@@ -83,7 +94,9 @@ typedef struct {
 #ifdef MULTI_GPU
     ncclComm_t world_comm;      // NCCL communicator over all processes.
     ncclComm_t tp_comm;         // NCCL communicator over the tensor-parallel group (valid if tp_size > 1).
-    ncclComm_t nccl_comm;       // NCCL communicator over the data-parallel group, used for gradients and ZeRO.
+    ncclComm_t cp_comm;         // NCCL communicator over the context-parallel group (valid if cp_size > 1).
+    ncclComm_t pp_comm;         // NCCL communicator over the pipeline stages (valid if pp_size > 1).
+    ncclComm_t nccl_comm;       // NCCL communicator over the gradient group, used for gradients and ZeRO.
     cudaStream_t nccl_stream;   // CUDA Stream to perform NCCL operations.
     cudaEvent_t compute_nccl_sync; // Event used to synchronize NCCL with the compute
     float* unified_buffer;
@@ -463,9 +476,15 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     result.world_comm = result.nccl_comm;
     result.world_rank = result.process_rank;
     result.world_size = result.num_processes;
+    result.dp_rank = result.process_rank;
+    result.dp_size = result.num_processes;
     result.tp_rank = 0;
     result.tp_size = 1;
     result.sequence_parallel = false;
+    result.cp_rank = 0;
+    result.cp_size = 1;
+    result.pp_rank = 0;
+    result.pp_size = 1;
     cudaCheck(cudaStreamCreate(&result.nccl_stream));
     // event without timing for maximum performance
     cudaCheck(cudaEventCreate(&result.compute_nccl_sync, cudaEventDisableTiming));
@@ -482,41 +501,70 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     result.local_device_idx = 0;
     result.world_rank = 0;
     result.world_size = 1;
+    result.dp_rank = result.process_rank;
+    result.dp_size = result.num_processes;
     result.tp_rank = 0;
     result.tp_size = 1;
     result.sequence_parallel = false;
+    result.cp_rank = 0;
+    result.cp_size = 1;
+    result.pp_rank = 0;
+    result.pp_size = 1;
     return result;
 #endif
 }
 
-// Split the processes into tensor-parallel groups of tp_size consecutive ranks (one node with the
-// default rank placement) and data-parallel groups across them. Afterwards process_rank, num_processes
-// and nccl_comm refer to the data-parallel group.
-void multi_gpu_setup_tensor_parallel(MultiGpuConfig* config, int tp_size) {
-    if (tp_size <= 1) { return; }
+// Split the processes into a dp x pp x cp x tp grid, tp varying fastest:
+//   world_rank = ((dp_rank * pp_size + pp_rank) * cp_size + cp_rank) * tp_size + tp_rank
+// so a tensor-parallel group is tp_size consecutive ranks (one node with the default rank placement),
+// then context parallelism, then pipeline stages. Afterwards process_rank, num_processes and nccl_comm
+// refer to the gradient group (same tp_rank and pp_rank: dp_size * cp_size ranks).
+void multi_gpu_setup_model_parallel(MultiGpuConfig* config, int tp_size, int cp_size, int pp_size) {
+    if (tp_size <= 1 && cp_size <= 1 && pp_size <= 1) { return; }
 #ifdef MULTI_GPU
-    if (config->world_size % tp_size != 0) {
-        fprintf(stderr, "Tensor-parallel size %d must divide the number of processes %d\n", tp_size, config->world_size);
+    int mp_size = tp_size * cp_size * pp_size;
+    if (config->world_size % mp_size != 0) {
+        fprintf(stderr, "TP x CP x PP = %d must divide the number of processes %d\n", mp_size, config->world_size);
         exit(EXIT_FAILURE);
     }
-    int tp_rank = config->world_rank % tp_size;
-    int dp_rank = config->world_rank / tp_size;
+    int w = config->world_rank;
     config->tp_size = tp_size;
-    config->tp_rank = tp_rank;
-    ncclCheck(ncclCommSplit(config->world_comm, dp_rank, tp_rank, &config->tp_comm, NULL));
-    ncclCheck(ncclCommSplit(config->world_comm, tp_rank, dp_rank, &config->nccl_comm, NULL));
-    config->process_rank = dp_rank;
-    config->num_processes = config->world_size / tp_size;
+    config->cp_size = cp_size;
+    config->pp_size = pp_size;
+    config->tp_rank = w % tp_size;
+    config->cp_rank = (w / tp_size) % cp_size;
+    config->pp_rank = (w / (tp_size * cp_size)) % pp_size;
+    config->dp_rank = w / mp_size;
+    config->dp_size = config->world_size / mp_size;
+    // ncclCommSplit(comm, color, key): ranks with the same color form one communicator, ordered by key
+    if (tp_size > 1) {
+        ncclCheck(ncclCommSplit(config->world_comm, w / tp_size, config->tp_rank, &config->tp_comm, NULL));
+    }
+    if (cp_size > 1) {  // same dp, pp and tp rank
+        int color = (w / (tp_size * cp_size)) * tp_size + config->tp_rank;
+        ncclCheck(ncclCommSplit(config->world_comm, color, config->cp_rank, &config->cp_comm, NULL));
+    }
+    if (pp_size > 1) {  // same dp, cp and tp rank
+        int color = config->dp_rank * (cp_size * tp_size) + config->cp_rank * tp_size + config->tp_rank;
+        ncclCheck(ncclCommSplit(config->world_comm, color, config->pp_rank, &config->pp_comm, NULL));
+    }
+    // gradient group: same pp and tp rank, ordered by (dp_rank, cp_rank)
+    config->process_rank = config->dp_rank * cp_size + config->cp_rank;
+    config->num_processes = config->dp_size * cp_size;
+    ncclCheck(ncclCommSplit(config->world_comm, config->pp_rank * tp_size + config->tp_rank, config->process_rank,
+                            &config->nccl_comm, NULL));
 #else
-    fprintf(stderr, "Tensor parallelism needs a multi-GPU build\n");
+    fprintf(stderr, "Tensor / context / pipeline parallelism needs a multi-GPU build\n");
     exit(EXIT_FAILURE);
 #endif
 }
 
 void multi_gpu_config_free(MultiGpuConfig* config) {
 #ifdef MULTI_GPU
-    if (config->tp_size > 1) {
-        ncclCheck(ncclCommDestroy(config->tp_comm));
+    if (config->tp_size > 1) { ncclCheck(ncclCommDestroy(config->tp_comm)); }
+    if (config->cp_size > 1) { ncclCheck(ncclCommDestroy(config->cp_comm)); }
+    if (config->pp_size > 1) { ncclCheck(ncclCommDestroy(config->pp_comm)); }
+    if (config->tp_size > 1 || config->cp_size > 1 || config->pp_size > 1) {
         ncclCheck(ncclCommDestroy(config->nccl_comm));
     }
     ncclCheck(ncclCommDestroy(config->world_comm));
@@ -692,5 +740,43 @@ floatX* tp_reduce_scatter(floatX* full, size_t chunk_numel, MultiGpuConfig* conf
     return local;
 }
 
-#endif
 
+// Pipeline parallelism: point-to-point transfers of activations / their gradients between neighbouring
+// stages, ordered on `stream` (the compute stream). A send and a receive that must happen together
+// (e.g. send this micro-batch's output forward while receiving an older micro-batch's gradient) go in
+// one NCCL group, so neither side waits for the other: see gpt2_pipeline_step for the schedule.
+void pp_send(const floatX* buf, size_t n, int peer, MultiGpuConfig* config, cudaStream_t stream) {
+#ifdef MULTI_GPU
+    ncclCheck(ncclSend(buf, n, ncclFloatX, peer, config->pp_comm, stream));
+#endif
+}
+
+void pp_recv(floatX* buf, size_t n, int peer, MultiGpuConfig* config, cudaStream_t stream) {
+#ifdef MULTI_GPU
+    ncclCheck(ncclRecv(buf, n, ncclFloatX, peer, config->pp_comm, stream));
+#endif
+}
+
+// In-place sum of a buffer across the pipeline stages (gradients of the tensors every stage holds a copy of).
+void pp_all_reduce(floatX* buf, size_t n, MultiGpuConfig* config, cudaStream_t stream) {
+#ifdef MULTI_GPU
+    if (config->pp_size == 1) return;
+    ncclCheck(ncclAllReduce(buf, buf, n, ncclFloatX, ncclSum, config->pp_comm, stream));
+#endif
+}
+
+// Sum of a single CPU value across the pipeline stages (e.g. the loss, which only the last stage has).
+float pp_cpu_float_sum(float value, MultiGpuConfig* config) {
+#ifdef MULTI_GPU
+    if (config->pp_size == 1) return value;
+    float* unified_buffer = config->unified_buffer;
+    *unified_buffer = value;
+    ncclCheck(ncclAllReduce(unified_buffer, unified_buffer, 1, ncclFloat, ncclSum, config->pp_comm, config->nccl_stream));
+    cudaCheck(cudaDeviceSynchronize());
+    return *unified_buffer;
+#else
+    return value;
+#endif
+}
+
+#endif
