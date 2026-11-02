@@ -1,6 +1,6 @@
 # llm.c-parallel
 
-Distributed training experiments on top of [karpathy/llm.c](https://github.com/karpathy/llm.c) (C/CUDA), on an NVIDIA A100 GPU cluster: ZeRO-2, ZeRO-3 and Megatron-style tensor and sequence parallelism implemented in raw C/CUDA + NCCL, validated against the llm.c baseline, and combined across nodes.
+Distributed training experiments on top of [karpathy/llm.c](https://github.com/karpathy/llm.c) (C/CUDA), on an NVIDIA A100 GPU cluster: ZeRO-2, ZeRO-3, Megatron-style tensor and sequence parallelism, context parallelism and 1F1B pipeline parallelism implemented in raw C/CUDA + NCCL, validated against the llm.c baseline, and combined across nodes.
 
 ## Goal
 
@@ -10,6 +10,7 @@ Implement and benchmark distributed training techniques in raw C/CUDA, and compa
 - ZeRO-3 (parameter sharding with per-layer all-gather and prefetching)
 - Tensor Parallelism (Megatron-style, intra-node)
 - Multi-dimensional parallelism across nodes (TP intra-node x ZeRO/DP inter-node)
+- Sequence, context and pipeline parallelism (SP on top of TP, all-gather CP for long sequences, 1F1B PP)
 
 Each implementation is validated in three steps: short loss-matching runs on 2 GPUs, a longer loss-curve comparison against the baseline on GPT-2 124M, and throughput/memory benchmarks.
 
@@ -232,6 +233,84 @@ With gradient accumulation the first 9 steps agree within 0.0003; the maximum is
 
 Logs: `experiments/logs/sp_test_8gpu*`, `experiments/logs/sp_memory_8gpu*`.
 
+### Context parallelism
+
+`-cp N` splits every sequence into N contiguous chunks of T/N tokens; CP rank r runs the whole model on chunk r only (its tokens and its rows of the position embeddings). Everything except attention works token by token, so it runs unchanged on the local chunk. Attention ([`llmc/context_parallel.cuh`](llmc/context_parallel.cuh)) needs, for each local query, the keys and values of all earlier tokens of the sequence:
+
+- Forward: **all-gather K and V** over the CP group, then attention of the T/N local queries against the (r+1)·T/N keys they can see, with the causal mask shifted by the query offset r·T/N.
+- Backward: all-gather K and V again (not stored, to save memory), compute dQ for the local queries and partial dK, dV for all visible keys, then **reduce-scatter dK, dV** so that each rank gets the summed gradients of its own keys and values.
+- The CP ranks see different tokens of the same sequences, so for the gradients they act like data-parallel ranks: the gradient all-reduce / ZeRO group is DP×CP, and the loss is normalised by the local token count so that the group average is the right gradient. CP therefore composes with ZeRO-1/2/3, TP and SP without changes there.
+- This is the all-gather variant of CP (as in Llama 3). Megatron's ring attention passes the K/V chunks around a ring instead, to overlap the transfers with the attention compute. With contiguous chunks the last CP rank does the most attention work (rank 0 only sees its own keys); a zig-zag chunk assignment would balance it.
+- Needs the non-cuDNN attention and T/N a multiple of 8. For long-context runs from a random init, `-t` larger than the model's default context now extends the position embeddings.
+
+**Correctness** (`d12`, B=4, T=1024, 30 steps, same batches):
+
+| Comparison | Step 1 | Max over 30 steps |
+|---|---|---|
+| CP=2 vs 1 GPU | 0 | 0.017 |
+| CP=4 / CP=8 vs 1 GPU | 0.0002 | 0.016 / 0.032 |
+| CP=2 x TP=2 vs 1 GPU | 0.0001 | 0.020 |
+| CP=2 x TP=2: SP vs no SP | 0 | 0.0005 |
+| CP=2: ZeRO-1 vs ZeRO-0 / ZeRO-2 vs ZeRO-1 | 0 | 0.003 / 0.0003 |
+| CP=2: ZeRO-3 vs ZeRO-2 | 0 | 0 (bit-identical) |
+| CP=4 x DP=2 vs DP=2 | 0.0001 | 0.005 |
+
+The first 14 steps agree within 0.0015 for every CP size. CP=8 then drifts to ~0.03: each key's gradient is summed from 8 partial bf16 results instead of one fp32-accumulated matmul.
+
+**Long sequences** (`d12`, one sequence per step, non-flash attention whose memory grows with T²):
+
+| T | GPUs (CP) | Activations / sequence | Memory / GPU | ms/step | tokens/s |
+|---|---|---|---|---|---|
+| 4,096 | 1 | 5.9 GB | 8.5 GB | 71.1 | 57,691 |
+| 4,096 | 2 | 3.0 GB | 7.2 GB | 52.5 | 76,508 |
+| 4,096 | 4 | 1.5 GB | 6.2 GB | 38.3 | 103,708 |
+| 4,096 | 8 | 0.77 GB | 5.5 GB | 32.1 | 127,220 |
+| 16,384 | 2 | — | out of memory | | |
+| 16,384 | 4 | 21.0 GB | 25.8 GB | 276.3 | 59,320 |
+| 16,384 | 8 | 10.5 GB | 15.4 GB | 167.3 | 97,860 |
+
+- Activation memory per GPU scales as 1/CP. A 16K-token sequence (~84 GB of activations) cannot be trained on one or two 40 GB GPUs, and fits with CP=4 or 8.
+- Speed-up is sub-linear on this small model (2.2x on 8 GPUs at T=4K, 1.65x from CP=4 to CP=8 at T=16K): the K/V all-gathers and dK/dV reduce-scatters are not overlapped, and the attention load is unbalanced across ranks.
+
+Logs: `experiments/logs/cp_test_8gpu*`, `experiments/logs/cp_long_8gpu*`.
+
+### Pipeline parallelism
+
+`-pp N` splits the layers into N stages of L/N consecutive layers, one stage per GPU (ranks are ordered DP x PP x CP x TP, so TP stays inside a node and stages can span nodes). Stages pass the (B, T, C) residual stream forward and its gradient backward with NCCL send/recv. The micro-batches of the pipeline are the gradient accumulation steps (`-d` = M x B x T x DP).
+
+- Schedule: non-interleaved **1F1B** as in Megatron-LM (`gpt2_pipeline_step`). Stage s runs N-s-1 warm-up forward passes, then alternates one forward and one backward pass, and ends with the remaining backward passes. At most N-s micro-batches are in flight on stage s, so stage s keeps N-s copies of the layer activations (scratch buffers are shared), not M as in GPipe. Sends and receives that two neighbouring stages make towards each other at the same point (send activation + receive gradient, send gradient + receive activation) are grouped in one NCCL call so neither side blocks.
+- The first stage runs the embedding, the last stage `lnf`, the LM head and the loss. Every stage keeps a copy of `wte`, `wpe`, `lnf` (the tied `wte` is needed on both ends); their gradients are summed over the stages after the schedule, so all copies get the same update. The gradient norm counts each stage's layers plus the shared tensors once.
+- Composes with TP, CP and DP + ZeRO-1. Not supported yet: ZeRO-2/3, SP, `-r 2`.
+
+**Correctness** (`d12`, B=4, 30 steps, same batches, M micro-batches):
+
+| Comparison | Step 1 | Max over 30 steps |
+|---|---|---|
+| PP=2 / PP=4 vs 1 GPU (M=4) | 0 | 0.003 / 0.007 |
+| PP=3 / PP=6 vs 1 GPU (M=8) | 0 | 0.002 / 0.0009 |
+| PP=2 x TP=2 vs 1 GPU (M=4) | 0.00001 | 0.007 |
+| PP=2 x CP=2 vs 1 GPU (M=4) | 0 | 0.036 |
+| PP=4 x DP=2, ZeRO-1 vs DP=2 (M=4) | 0 | 0.035 |
+
+The step-1 loss and the initial validation loss are bit-identical to one GPU. The two larger maxima are single steps: step 10 of the DP=2 run is a loss spike (7.8 → 8.2) in the baseline too, and the difference is back to 0.002 the next step; PP=2 x CP=2 stays within 0.016 apart from step 25.
+
+**Throughput** (GPT-3 6.7B, 32 layers, T=1024, 32 sequences per step, one node, DP=1):
+
+| Layout | B | M | Bubble (N-1)/(M+N-1) | Memory / GPU | Est. max B | ms/step | tokens/s | MFU |
+|---|---|---|---|---|---|---|---|---|
+| TP=8 | 8 | 4 | — | 31.1 GB | 13 | 1428 | 22,928 | 37.5% |
+| TP=4 x PP=2 | 8 | 4 | 20% | 35.6 GB | 10 | 1400 | 23,394 | 38.2% |
+| TP=2 x PP=4 | 4 | 8 | 27% | 31.1 GB | 6 | 1377 | 23,801 | 38.9% |
+| PP=8 | 4 | 8 | 47% | 38.9 GB | 4 | 1590 | 20,629 | 33.7% |
+| PP=8 | 2 | 16 | 30% | 28.2 GB | 4 | **1326** | **24,729** | **40.4%** |
+
+- Pure PP=8 with 16 micro-batches is the fastest layout here (+8% over TP=8): PP only sends one (B, T, C) tensor per stage boundary per micro-batch, while TP=8 all-reduces four of them per layer.
+- More micro-batches shrink the bubble: PP=8 goes from 1590 to 1326 ms when M goes from 8 to 16 (smaller B, so each micro-batch is cheaper and the stages fill sooner).
+- PP's memory cost is the first stage: it keeps N copies of its layer activations, plus copies of `wte`/`wpe` on every stage. With B=4 the first stage of PP=8 is near the 40 GB limit.
+- The loss values of these 6.7B runs (LR 3e-4, no warmup) spike in every layout; they differ between B=2/4/8 only because the data loader's shuffled order depends on B.
+
+Logs: `experiments/logs/pp_test_8gpu*`, `experiments/logs/pp_perf_8gpu*`.
+
 ## Changes to upstream llm.c
 
 - `Makefile`: added a `NCCL_DIR` option so NCCL can be found on systems without `dpkg` (e.g. RHEL-based HPC clusters).
@@ -240,6 +319,9 @@ Logs: `experiments/logs/sp_test_8gpu*`, `experiments/logs/sp_memory_8gpu*`.
 - `train_gpt2.cu`: the all-gather after the AdamW update now waits for the update on the compute stream (event record + wait). Upstream starts it on the NCCL stream without this dependency.
 - Tensor parallelism (`-tp`): `llmc/zero.cuh` splits the processes into TP and DP groups and adds `tp_all_reduce`; `train_gpt2.cu` slices parameter and activation shapes, the random init, forward and backward, and the gradient norm. `printf0` and the logger now use the global rank.
 - Sequence parallelism (`-sp`): `llmc/zero.cuh` adds `tp_all_gather` / `tp_reduce_scatter`; `train_gpt2.cu` shards the LayerNorm/residual activations by token, replaces the TP all-reduces with reduce-scatter/all-gather in forward and backward, and sums the LN weight gradients over the TP group.
+- Process grid: `llmc/zero.cuh` splits the processes into DP x PP x CP x TP (`multi_gpu_setup_model_parallel`); `process_rank` / `num_processes` now describe the gradient group (DP x CP) and the data loaders use the new `dp_rank` / `dp_size`.
+- Context parallelism (`-cp`): new `llmc/context_parallel.cuh` (attention with all-gathered K/V and reduce-scattered dK/dV, causal softmax with a query offset); `train_gpt2.cu` runs the model on each rank's chunk of the sequences and offsets the position embeddings. `-t` larger than a descriptor model's context extends its position embeddings.
+- Pipeline parallelism (`-pp`): `train_gpt2.cu` keeps only the stage's layers, adds the 1F1B schedule (`gpt2_pipeline_step`) with extra activation sets for in-flight micro-batches, stage-aware forward/backward/validation, and sums the shared tensors' gradients over the stages; `llmc/zero.cuh` adds the send/recv and PP reduction helpers.
 
 ## Roadmap
 
@@ -251,11 +333,13 @@ Logs: `experiments/logs/sp_test_8gpu*`, `experiments/logs/sp_memory_8gpu*`.
 - [x] Longer loss-curve validation of ZeRO-2/3 on GPT-2 124M (2,000 steps, 1B tokens)
 - [x] Tensor Parallelism (Megatron-style, composes with ZeRO-1/2/3)
 - [x] Sequence Parallelism (Megatron-style, on top of TP; halves TP=8 activation memory on 6.7B)
+- [x] Context Parallelism (all-gather K/V; trains 16K-token sequences that do not fit on 1-2 GPUs)
+- [x] Pipeline Parallelism (1F1B; PP=8 is 8% faster than TP=8 on 6.7B)
 - [x] Multi-node multi-dimensional parallelism (TP x ZeRO/DP on 2 nodes, 6.7B and 12.2B)
 - [x] Profiling analysis with Nsight Systems
 - [ ] ZeRO-3 / TP checkpoint writing and resuming
 - [ ] Overlap the TP all-reduces with compute, vocab-parallel LM head
-- Future work: Pipeline Parallelism (1F1B)
+- [ ] Ring attention (overlapped K/V transfers) and load-balanced chunks for CP; interleaved 1F1B and ZeRO-2/3 for PP
 
 ## Reproduce
 
@@ -276,6 +360,14 @@ mpiexec -n 8 ./train_gpt2cu -e d12 -b 16 -t 1024 -x 50 -v 10000 -s 0 -z 1 \
 mpiexec -n 8 ./train_gpt2cu -e d72 -b 2 -t 1024 -x 5 -v 10000 -s 0 -z 3 \
   -i dev/data/tinyshakespeare/tiny_shakespeare_train.bin \
   -j dev/data/tinyshakespeare/tiny_shakespeare_train.bin
+
+# context parallelism: one 16K-token sequence split over 8 GPUs
+mpiexec -n 8 ./train_gpt2cu -e d12 -b 1 -t 16384 -cp 8 -x 10 -v 10000 -s 0 \
+  -i dev/data/tinyshakespeare/tiny_shakespeare_train.bin -j dev/data/tinyshakespeare/tiny_shakespeare_train.bin
+
+# pipeline parallelism: 8 stages, 16 micro-batches of 2 sequences per step
+mpiexec -n 8 ./train_gpt2cu -e gpt3:c4096 -b 2 -t 1024 -d 32768 -pp 8 -x 10 -v 10000 -s 0 \
+  -i dev/data/tinyshakespeare/tiny_shakespeare_train.bin -j dev/data/tinyshakespeare/tiny_shakespeare_train.bin
 
 # tensor parallelism inside each node x ZeRO-3 across 2 nodes (16 GPUs)
 mpiexec -machinefile $PJM_O_NODEINF -n 16 -npernode 8 ./train_gpt2cu -e d84 -b 4 -t 1024 -x 10 -v 10000 -s 0 \
