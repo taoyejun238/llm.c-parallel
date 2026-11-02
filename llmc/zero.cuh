@@ -69,6 +69,9 @@ typedef struct {
     int world_size;        // Total number of processes.
     int tp_rank;           // Rank in the tensor-parallel group (0 .. tp_size-1).
     int tp_size;           // Tensor-parallel degree. 1 = no tensor parallelism.
+    // Megatron sequence parallelism (needs tp_size > 1): outside the attention/MLP matmuls (LayerNorms,
+    // residual stream) each TP rank keeps only its 1/tp of the tokens instead of a full replica.
+    bool sequence_parallel;
 
     // Zero Redundancy Optimizer stage - https://fairscale.readthedocs.io/en/stable/deep_dive/oss_sdp_fsdp.html
     // 0-Disabled
@@ -462,6 +465,7 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     result.world_size = result.num_processes;
     result.tp_rank = 0;
     result.tp_size = 1;
+    result.sequence_parallel = false;
     cudaCheck(cudaStreamCreate(&result.nccl_stream));
     // event without timing for maximum performance
     cudaCheck(cudaEventCreate(&result.compute_nccl_sync, cudaEventDisableTiming));
@@ -480,6 +484,7 @@ MultiGpuConfig multi_gpu_config_init(int num_processes, int process_rank, int gp
     result.world_size = 1;
     result.tp_rank = 0;
     result.tp_size = 1;
+    result.sequence_parallel = false;
     return result;
 #endif
 }
@@ -666,6 +671,25 @@ void tp_all_reduce(floatX* buf, size_t n, MultiGpuConfig* config, cudaStream_t s
     if (config->tp_size == 1) return;
     ncclCheck(ncclAllReduce(buf, buf, n, ncclFloatX, ncclSum, config->tp_comm, stream));
 #endif
+}
+
+// Sequence parallelism, the two halves of tp_all_reduce. Activations are (tokens, C) row-major and
+// TP rank r owns the contiguous token chunk [r * chunk_tokens, (r + 1) * chunk_tokens).
+// All-gather: each rank's local chunk (chunk_numel elements) -> the full tensor on every rank.
+void tp_all_gather(const floatX* local, floatX* full, size_t chunk_numel, MultiGpuConfig* config, cudaStream_t stream) {
+#ifdef MULTI_GPU
+    ncclCheck(ncclAllGather(local, full, chunk_numel, ncclFloatX, config->tp_comm, stream));
+#endif
+}
+
+// Reduce-scatter in place: sums the full partial tensors across the TP group; this rank's summed
+// chunk ends up at full + tp_rank * chunk_numel, which is returned.
+floatX* tp_reduce_scatter(floatX* full, size_t chunk_numel, MultiGpuConfig* config, cudaStream_t stream) {
+    floatX* local = full + (size_t)config->tp_rank * chunk_numel;
+#ifdef MULTI_GPU
+    ncclCheck(ncclReduceScatter(full, local, chunk_numel, ncclFloatX, ncclSum, config->tp_comm, stream));
+#endif
+    return local;
 }
 
 #endif
