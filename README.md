@@ -1,6 +1,6 @@
 # llm.c-parallel
 
-Distributed training experiments on top of [karpathy/llm.c](https://github.com/karpathy/llm.c) (C/CUDA), on an NVIDIA A100 GPU cluster: ZeRO-2, ZeRO-3 and Megatron-style tensor parallelism implemented in raw C/CUDA + NCCL, validated against the llm.c baseline, and combined across nodes.
+Distributed training experiments on top of [karpathy/llm.c](https://github.com/karpathy/llm.c) (C/CUDA), on an NVIDIA A100 GPU cluster: ZeRO-2, ZeRO-3 and Megatron-style tensor and sequence parallelism implemented in raw C/CUDA + NCCL, validated against the llm.c baseline, and combined across nodes.
 
 ## Goal
 
@@ -194,6 +194,44 @@ TP cannot be bit-identical to one GPU: the all-reduce changes the BF16 summation
 
 Limitations of TP: no checkpoint writing/loading, random init only (`-e dN` descriptors), heads must divide by the TP size (GPT-2 sizes have 12-36 heads; `gpt3:c4096` has 32), and the LM head (`wte` matmul) is computed redundantly on every TP rank. Text generation (`-s`) is disabled with TP and ZeRO-3, since their forward pass is collective and generation runs on rank 0 only. Logs: `experiments/logs/multinode_16gpu*`.
 
+### Sequence parallelism
+
+Megatron-style sequence parallelism on top of TP, `-tp N -sp 1`. TP shards the attention and MLP matmuls, but the LayerNorms and the residual stream between them are still replicated on every TP rank. SP shards that region by token instead: each TP rank holds 1/N of the B×T tokens of the residual stream, LayerNorm inputs/outputs and statistics.
+
+- Forward, per layer: LN on this rank's tokens → **all-gather** → column-parallel `qkv` → attention → row-parallel `attproj` → **reduce-scatter** back to this rank's tokens → residual + LN → all-gather → `fc` → `fcproj` → reduce-scatter. Each all-reduce of TP becomes a reduce-scatter plus an all-gather, so the forward communication volume is unchanged.
+- Backward mirrors it: the residual gradient is all-gathered before each row-parallel matmul, and the partial input gradients of the column-parallel matmuls are reduce-scattered. The LN outputs are all-gathered once more for the column-parallel weight gradients.
+- LN weight gradients are now computed from each rank's tokens only and are summed over the TP group (per micro-step with ZeRO-2/3, whose layer buffer is fresh; once on the last micro-step otherwise, since they accumulate in place). The embedding and the LM head still run on all tokens, so the embedding output is split at the start and `lnf` is all-gathered at the end.
+- Requires `-tp > 1`, `-r 0` or `1`, and B×T divisible by the TP size.
+
+**Correctness** (`d12`, B=8, data-parallel size 2, 30 steps):
+
+| Comparison | Step 1 | Max over 30 steps |
+|---|---|---|
+| TP=2: SP vs no SP | 0 | 0.0004 |
+| TP=4: SP vs no SP | 0.00014 | 0.016 |
+| TP=4 + SP vs no TP at all (2 GPUs) | 0.00003 | 0.006 |
+| TP=2 + SP: ZeRO-1 vs ZeRO-0 | 0 | 0.001 |
+| TP=2 + SP: ZeRO-2 vs ZeRO-1, ZeRO-3 vs ZeRO-2 | 0 | 0 (bit-identical) |
+| TP=2, 2 accumulation steps: SP + ZeRO-1 / SP + ZeRO-2 vs no SP | 0 | 0.036 / 0.064 |
+
+With gradient accumulation the first 9 steps agree within 0.0003; the maximum is at step 10, a loss spike (13.5, gradient norm ~100) present in all three runs, and the difference falls back to ~0.003 afterwards. Without `-sp`, all TP losses are bit-identical to the TP-only build.
+
+**Memory** (GPT-3 6.7B, TP=8 on one node, DP=1, ZeRO-0):
+
+| B | SP | Activations | Memory / GPU | Est. max B | ms/step | tokens/s | MFU |
+|---|---|---|---|---|---|---|---|
+| 8 | off | 13.6 GB | 31.1 GB | 13 | 377.8 | 21,686 | 35.4% |
+| 8 | on | **6.4 GB** | 24.0 GB | **28** | 383.3 | 21,372 | 34.9% |
+| 12 | off | 20.3 GB | 37.9 GB | 13 | 534.7 | 22,981 | 37.5% |
+| 12 | on | 9.6 GB | 27.2 GB | 28 | 536.3 | 22,914 | 37.4% |
+| 16 | on | 12.8 GB | 30.4 GB | 28 | 724.0 | 22,742 | 38.0% |
+
+- SP halves the activation memory of TP=8 (1.70 → 0.80 GB per sequence), and the estimated maximum batch goes from 13 to 28.
+- Speed is unchanged at 6.7B (+1.5% at B=8, +0.3% at B=12). On the small `d12` model it costs 8-9% (45.9 → 49.5 ms at TP=2), where the extra backward all-gathers are not hidden behind enough compute.
+- Throughput at 6.7B saturates around B=12 here, so on this model SP's value is the memory headroom (longer sequences, larger models, or less recomputation), not more tokens/s.
+
+Logs: `experiments/logs/sp_test_8gpu*`, `experiments/logs/sp_memory_8gpu*`.
+
 ## Changes to upstream llm.c
 
 - `Makefile`: added a `NCCL_DIR` option so NCCL can be found on systems without `dpkg` (e.g. RHEL-based HPC clusters).
@@ -201,6 +239,7 @@ Limitations of TP: no checkpoint writing/loading, random init only (`-e dN` desc
 - ZeRO-2 and ZeRO-3: new `llmc/zero2.cuh` and `llmc/zero3.cuh`; `llmc/zero.cuh` accepts `-z 2` and `-z 3`; `train_gpt2.cu` changes gradient/parameter allocation, the per-layer pointers in forward and backward, the gradient norm and the AdamW update.
 - `train_gpt2.cu`: the all-gather after the AdamW update now waits for the update on the compute stream (event record + wait). Upstream starts it on the NCCL stream without this dependency.
 - Tensor parallelism (`-tp`): `llmc/zero.cuh` splits the processes into TP and DP groups and adds `tp_all_reduce`; `train_gpt2.cu` slices parameter and activation shapes, the random init, forward and backward, and the gradient norm. `printf0` and the logger now use the global rank.
+- Sequence parallelism (`-sp`): `llmc/zero.cuh` adds `tp_all_gather` / `tp_reduce_scatter`; `train_gpt2.cu` shards the LayerNorm/residual activations by token, replaces the TP all-reduces with reduce-scatter/all-gather in forward and backward, and sums the LN weight gradients over the TP group.
 
 ## Roadmap
 
@@ -211,6 +250,7 @@ Limitations of TP: no checkpoint writing/loading, random init only (`-e dN` desc
 - [x] ZeRO-3 (bit-identical to ZeRO-2; trains 7.3B at B=2 and 12.2B on one 8-GPU node)
 - [x] Longer loss-curve validation of ZeRO-2/3 on GPT-2 124M (2,000 steps, 1B tokens)
 - [x] Tensor Parallelism (Megatron-style, composes with ZeRO-1/2/3)
+- [x] Sequence Parallelism (Megatron-style, on top of TP; halves TP=8 activation memory on 6.7B)
 - [x] Multi-node multi-dimensional parallelism (TP x ZeRO/DP on 2 nodes, 6.7B and 12.2B)
 - [x] Profiling analysis with Nsight Systems
 - [ ] ZeRO-3 / TP checkpoint writing and resuming
